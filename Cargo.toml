@@ -1,0 +1,16 @@
+[package]
+name = "verus-mcp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rmcp = { version = "1", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", features = ["full"] }
+tree-sitter = "0.25"
+tree-sitter-verus = { path = "../tree-sitter-verus" }
+serde = { version = "1", features = ["derive"] }
+schemars = "1"
+walkdir = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
