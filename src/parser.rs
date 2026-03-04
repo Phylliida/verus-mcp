@@ -1,12 +1,21 @@
 use crate::types::*;
 
-/// Extract function entries from a Verus source file using tree-sitter.
+/// Parsed output from a single file.
+#[derive(Debug, Clone, Default)]
+pub struct ParsedItems {
+    pub functions: Vec<FnEntry>,
+    pub types: Vec<TypeEntry>,
+    pub traits: Vec<TraitEntry>,
+    pub impls: Vec<ImplEntry>,
+}
+
+/// Extract function and type entries from a Verus source file using tree-sitter.
 pub fn extract_items(
     source: &str,
     file_path: &str,
     crate_name: &str,
     module_path: &str,
-) -> Result<Vec<FnEntry>, String> {
+) -> Result<ParsedItems, String> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(&tree_sitter_verus::LANGUAGE.into())
@@ -17,7 +26,7 @@ pub fn extract_items(
         .ok_or_else(|| "Failed to parse source".to_string())?;
 
     let root = tree.root_node();
-    let mut items = Vec::new();
+    let mut items = ParsedItems::default();
 
     collect_items_from_node(&root, source, file_path, crate_name, module_path, None, &mut items);
 
@@ -31,7 +40,7 @@ fn collect_items_from_node(
     crate_name: &str,
     module_path: &str,
     trait_name: Option<&str>,
-    items: &mut Vec<FnEntry>,
+    items: &mut ParsedItems,
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -63,7 +72,28 @@ fn collect_items_from_node(
                 if let Some(item) = extract_function_item(
                     &child, source, file_path, crate_name, module_path, trait_name,
                 ) {
-                    items.push(item);
+                    items.functions.push(item);
+                }
+            }
+            "struct_item" => {
+                if let Some(entry) = extract_struct_item(
+                    &child, source, file_path, crate_name, module_path,
+                ) {
+                    items.types.push(entry);
+                }
+            }
+            "enum_item" => {
+                if let Some(entry) = extract_enum_item(
+                    &child, source, file_path, crate_name, module_path,
+                ) {
+                    items.types.push(entry);
+                }
+            }
+            "type_item" => {
+                if let Some(entry) = extract_type_alias(
+                    &child, source, file_path, crate_name, module_path,
+                ) {
+                    items.types.push(entry);
                 }
             }
             _ => {}
@@ -77,12 +107,21 @@ fn collect_items_from_impl(
     file_path: &str,
     crate_name: &str,
     module_path: &str,
-    items: &mut Vec<FnEntry>,
+    items: &mut ParsedItems,
 ) {
     let type_name = impl_node
         .child_by_field_name("type")
         .map(|n| node_text(&n, source))
         .unwrap_or_default();
+
+    // Trait name from `impl Trait for Type` — the "trait" field
+    let trait_name = impl_node
+        .child_by_field_name("trait")
+        .map(|n| node_text(&n, source));
+
+    let type_params = impl_node
+        .child_by_field_name("type_parameters")
+        .map(|n| node_text(&n, source));
 
     let impl_module = if type_name.is_empty() {
         module_path.to_string()
@@ -90,18 +129,35 @@ fn collect_items_from_impl(
         format!("{}::{}", module_path, type_name)
     };
 
+    let mut method_names = Vec::new();
+
     if let Some(body) = impl_node.child_by_field_name("body") {
         let mut cursor = body.walk();
         for child in body.children(&mut cursor) {
             if child.kind() == "function_item" || child.kind() == "function_signature_item" {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    method_names.push(node_text(&name_node, source));
+                }
                 if let Some(item) = extract_function_item(
                     &child, source, file_path, crate_name, &impl_module, None,
                 ) {
-                    items.push(item);
+                    items.functions.push(item);
                 }
             }
         }
     }
+
+    let line = impl_node.start_position().row + 1;
+    items.impls.push(ImplEntry {
+        trait_name,
+        type_name,
+        type_params,
+        method_names,
+        crate_name: crate_name.to_string(),
+        module_path: module_path.to_string(),
+        file_path: file_path.to_string(),
+        line,
+    });
 }
 
 fn collect_items_from_trait(
@@ -110,12 +166,24 @@ fn collect_items_from_trait(
     file_path: &str,
     crate_name: &str,
     module_path: &str,
-    items: &mut Vec<FnEntry>,
+    items: &mut ParsedItems,
 ) {
     let trait_name = trait_node
         .child_by_field_name("name")
         .map(|n| node_text(&n, source))
         .unwrap_or_default();
+
+    let visibility = extract_visibility(trait_node, source);
+    let type_params = trait_node
+        .child_by_field_name("type_parameters")
+        .map(|n| node_text(&n, source));
+    let doc_comment = extract_doc_comment(trait_node, source);
+    let line = trait_node.start_position().row + 1;
+
+    // Extract supertraits from bounds (e.g., `trait Foo: Bar + Baz`)
+    let supertraits = trait_node
+        .child_by_field_name("bounds")
+        .map(|n| node_text(&n, source));
 
     let trait_module = if trait_name.is_empty() {
         module_path.to_string()
@@ -123,10 +191,15 @@ fn collect_items_from_trait(
         format!("{}::{}", module_path, trait_name)
     };
 
+    let mut method_names = Vec::new();
+
     if let Some(body) = trait_node.child_by_field_name("body") {
         let mut cursor = body.walk();
         for child in body.children(&mut cursor) {
             if child.kind() == "function_item" || child.kind() == "function_signature_item" {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    method_names.push(node_text(&name_node, source));
+                }
                 let tname = if trait_name.is_empty() {
                     None
                 } else {
@@ -135,10 +208,25 @@ fn collect_items_from_trait(
                 if let Some(item) = extract_function_item(
                     &child, source, file_path, crate_name, &trait_module, tname,
                 ) {
-                    items.push(item);
+                    items.functions.push(item);
                 }
             }
         }
+    }
+
+    if !trait_name.is_empty() {
+        items.traits.push(TraitEntry {
+            name: trait_name,
+            visibility,
+            type_params,
+            supertraits,
+            method_names,
+            crate_name: crate_name.to_string(),
+            module_path: module_path.to_string(),
+            doc_comment,
+            file_path: file_path.to_string(),
+            line,
+        });
     }
 }
 
@@ -178,6 +266,11 @@ fn extract_function_item(
     let requires = extract_clause(node, source, "requires_clause");
     let ensures = extract_clause(node, source, "ensures_clause");
 
+    // Body text (for function_item, not function_signature_item)
+    let body = node
+        .child_by_field_name("body")
+        .map(|n| node_text(&n, source));
+
     Some(FnEntry {
         name: name_text,
         kind,
@@ -191,6 +284,135 @@ fn extract_function_item(
         crate_name: crate_name.to_string(),
         module_path: module_path.to_string(),
         trait_name: trait_name.map(|s| s.to_string()),
+        doc_comment,
+        body,
+        file_path: file_path.to_string(),
+        line,
+    })
+}
+
+fn extract_struct_item(
+    node: &tree_sitter::Node,
+    source: &str,
+    file_path: &str,
+    crate_name: &str,
+    module_path: &str,
+) -> Option<TypeEntry> {
+    let name = node.child_by_field_name("name")?;
+    let name_text = node_text(&name, source);
+    let visibility = extract_visibility(node, source);
+    let line = node.start_position().row + 1;
+    let doc_comment = extract_doc_comment(node, source);
+
+    let type_params = node
+        .child_by_field_name("type_parameters")
+        .map(|n| node_text(&n, source));
+
+    // Extract field declarations
+    let mut fields = Vec::new();
+    if let Some(body) = node.child_by_field_name("body") {
+        let mut cursor = body.walk();
+        for child in body.children(&mut cursor) {
+            if child.kind() == "field_declaration" {
+                fields.push(node_text(&child, source).trim().to_string());
+            }
+        }
+    }
+
+    Some(TypeEntry {
+        name: name_text,
+        item_kind: ItemKind::Struct,
+        visibility,
+        type_params,
+        fields,
+        aliased_type: None,
+        crate_name: crate_name.to_string(),
+        module_path: module_path.to_string(),
+        doc_comment,
+        file_path: file_path.to_string(),
+        line,
+    })
+}
+
+fn extract_enum_item(
+    node: &tree_sitter::Node,
+    source: &str,
+    file_path: &str,
+    crate_name: &str,
+    module_path: &str,
+) -> Option<TypeEntry> {
+    let name = node.child_by_field_name("name")?;
+    let name_text = node_text(&name, source);
+    let visibility = extract_visibility(node, source);
+    let line = node.start_position().row + 1;
+    let doc_comment = extract_doc_comment(node, source);
+
+    let type_params = node
+        .child_by_field_name("type_parameters")
+        .map(|n| node_text(&n, source));
+
+    // Extract variant names
+    let mut fields = Vec::new();
+    if let Some(body) = node.child_by_field_name("body") {
+        let mut cursor = body.walk();
+        for child in body.children(&mut cursor) {
+            if child.kind() == "enum_variant" {
+                // Get just the variant name (first named child)
+                if let Some(vname) = child.child_by_field_name("name") {
+                    fields.push(node_text(&vname, source));
+                } else {
+                    fields.push(node_text(&child, source).trim().to_string());
+                }
+            }
+        }
+    }
+
+    Some(TypeEntry {
+        name: name_text,
+        item_kind: ItemKind::Enum,
+        visibility,
+        type_params,
+        fields,
+        aliased_type: None,
+        crate_name: crate_name.to_string(),
+        module_path: module_path.to_string(),
+        doc_comment,
+        file_path: file_path.to_string(),
+        line,
+    })
+}
+
+fn extract_type_alias(
+    node: &tree_sitter::Node,
+    source: &str,
+    file_path: &str,
+    crate_name: &str,
+    module_path: &str,
+) -> Option<TypeEntry> {
+    let name = node.child_by_field_name("name")?;
+    let name_text = node_text(&name, source);
+    let visibility = extract_visibility(node, source);
+    let line = node.start_position().row + 1;
+    let doc_comment = extract_doc_comment(node, source);
+
+    let type_params = node
+        .child_by_field_name("type_parameters")
+        .map(|n| node_text(&n, source));
+
+    // The aliased type (right-hand side of =)
+    let aliased_type = node
+        .child_by_field_name("type")
+        .map(|n| node_text(&n, source));
+
+    Some(TypeEntry {
+        name: name_text,
+        item_kind: ItemKind::TypeAlias,
+        visibility,
+        type_params,
+        fields: Vec::new(),
+        aliased_type,
+        crate_name: crate_name.to_string(),
+        module_path: module_path.to_string(),
         doc_comment,
         file_path: file_path.to_string(),
         line,

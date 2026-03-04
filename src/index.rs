@@ -1,17 +1,140 @@
 use crate::indexer::FileCache;
-use crate::types::{FnEntry, FnKind};
+use crate::types::{FnEntry, FnKind, ImplEntry, TraitEntry, TypeEntry};
+use regex::RegexBuilder;
+use std::collections::{HashMap, HashSet};
 
-const MAX_RESULTS: usize = 50;
+pub const MAX_RESULTS: usize = 50;
+
+/// A compiled matcher: regex if the query parses as one, otherwise plain substring.
+pub enum Matcher {
+    Regex(regex::Regex),
+    Substring(String),
+}
+
+impl Matcher {
+    /// Try to compile as case-insensitive regex; fall back to lowercase substring.
+    pub fn new(query: &str) -> Self {
+        match RegexBuilder::new(query).case_insensitive(true).build() {
+            Ok(re) => Matcher::Regex(re),
+            Err(_) => Matcher::Substring(query.to_lowercase()),
+        }
+    }
+
+    fn is_match(&self, text: &str) -> bool {
+        match self {
+            Matcher::Regex(re) => re.is_match(text),
+            Matcher::Substring(q) => text.to_lowercase().contains(q),
+        }
+    }
+
+    /// Return the byte offset of the first match, or None.
+    pub fn find_pos(&self, text: &str) -> Option<usize> {
+        match self {
+            Matcher::Regex(re) => re.find(text).map(|m| m.start()),
+            Matcher::Substring(q) => text.to_lowercase().find(q),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct CrateStats {
+    pub functions: usize,
+    pub types: usize,
+    pub traits: usize,
+    pub assume_false: usize,
+}
+
+pub struct IndexStats {
+    pub total_functions: usize,
+    pub total_types: usize,
+    pub total_traits: usize,
+    pub spec: usize,
+    pub proof: usize,
+    pub exec: usize,
+    pub assume_false: usize,
+    pub by_crate: std::collections::BTreeMap<String, CrateStats>,
+}
+
+/// Normalize crate name: replace hyphens with underscores and lowercase.
+fn normalize_crate(name: &str) -> String {
+    name.to_lowercase().replace('-', "_")
+}
+
+/// Compare two crate names, treating hyphens and underscores as equivalent.
+fn crate_name_matches(entry_crate: &str, filter_crate: &str) -> bool {
+    normalize_crate(entry_crate) == normalize_crate(filter_crate)
+}
+
+pub struct SearchResult<'a> {
+    pub items: Vec<&'a FnEntry>,
+    pub total_count: usize,
+}
+
+pub struct TypeSearchResult<'a> {
+    pub items: Vec<&'a TypeEntry>,
+    pub total_count: usize,
+}
 
 pub struct Index {
     entries: Vec<FnEntry>,
+    type_entries: Vec<TypeEntry>,
+    trait_entries: Vec<TraitEntry>,
+    impl_entries: Vec<ImplEntry>,
+    /// For each function name, indices of entries that call it.
+    callers: HashMap<String, Vec<usize>>,
+    /// For each entry index, set of function names it calls.
+    callees: Vec<HashSet<String>>,
     file_cache: FileCache,
 }
 
+/// Tokenize body text into identifier-like tokens.
+fn tokenize_body(body: &str) -> HashSet<&str> {
+    body.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Apply offset + limit pagination to a collected Vec.
+fn paginate<T>(items: Vec<T>, offset: usize, limit: usize) -> Vec<T> {
+    items.into_iter().skip(offset).take(limit).collect()
+}
+
 impl Index {
-    pub fn new(entries: Vec<FnEntry>, file_cache: FileCache) -> Self {
+    pub fn new(
+        entries: Vec<FnEntry>,
+        type_entries: Vec<TypeEntry>,
+        trait_entries: Vec<TraitEntry>,
+        impl_entries: Vec<ImplEntry>,
+        file_cache: FileCache,
+    ) -> Self {
+        // Build known function name set
+        let known_names: HashSet<String> = entries.iter().map(|e| e.name.clone()).collect();
+
+        // Build call graph
+        let mut callers: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut callees: Vec<HashSet<String>> = Vec::with_capacity(entries.len());
+
+        for (idx, entry) in entries.iter().enumerate() {
+            let mut entry_callees = HashSet::new();
+            if let Some(ref body) = entry.body {
+                let tokens = tokenize_body(body);
+                for token in tokens {
+                    if known_names.contains(token) && token != entry.name {
+                        entry_callees.insert(token.to_string());
+                        callers.entry(token.to_string()).or_default().push(idx);
+                    }
+                }
+            }
+            callees.push(entry_callees);
+        }
+
         Self {
             entries,
+            type_entries,
+            trait_entries,
+            impl_entries,
+            callers,
+            callees,
             file_cache,
         }
     }
@@ -24,7 +147,20 @@ impl Index {
         self.entries.len()
     }
 
+    pub fn type_len(&self) -> usize {
+        self.type_entries.len()
+    }
+
+    pub fn trait_len(&self) -> usize {
+        self.trait_entries.len()
+    }
+
+    pub fn impl_len(&self) -> usize {
+        self.impl_entries.len()
+    }
+
     /// Search by name substring, with optional filters.
+    /// Results ranked: exact match > prefix > substring, then by name length ascending.
     pub fn search(
         &self,
         query: &str,
@@ -32,24 +168,56 @@ impl Index {
         crate_name: Option<&str>,
         module: Option<&str>,
         trait_only: bool,
-    ) -> Vec<&FnEntry> {
+        offset: usize,
+        limit: usize,
+    ) -> SearchResult<'_> {
         let q = query.to_lowercase();
-        self.entries
+        let mut matches: Vec<&FnEntry> = self
+            .entries
             .iter()
             .filter(|e| e.name.to_lowercase().contains(&q))
             .filter(|e| kind.map_or(true, |k| e.kind == k))
-            .filter(|e| crate_name.map_or(true, |c| e.crate_name.eq_ignore_ascii_case(c)))
+            .filter(|e| crate_name.map_or(true, |c| crate_name_matches(&e.crate_name, c)))
             .filter(|e| {
                 module.map_or(true, |m| {
                     e.module_path.to_lowercase().contains(&m.to_lowercase())
                 })
             })
             .filter(|e| !trait_only || e.trait_name.is_some())
-            .take(MAX_RESULTS)
-            .collect()
+            .collect();
+
+        let total_count = matches.len();
+
+        // Rank: exact (0) > prefix (1) > substring (2), then by name length
+        matches.sort_by(|a, b| {
+            let a_lower = a.name.to_lowercase();
+            let b_lower = b.name.to_lowercase();
+            let a_tier = if a_lower == q {
+                0
+            } else if a_lower.starts_with(&q) {
+                1
+            } else {
+                2
+            };
+            let b_tier = if b_lower == q {
+                0
+            } else if b_lower.starts_with(&q) {
+                1
+            } else {
+                2
+            };
+            a_tier.cmp(&b_tier).then(a.name.len().cmp(&b.name.len()))
+        });
+
+        let items = paginate(matches, offset, limit);
+
+        SearchResult {
+            items,
+            total_count,
+        }
     }
 
-    /// Exact name match.
+    /// Exact name match for functions.
     pub fn lookup(&self, name: &str) -> Vec<&FnEntry> {
         self.entries
             .iter()
@@ -58,32 +226,208 @@ impl Index {
             .collect()
     }
 
-    /// Search within ensures clauses.
-    pub fn search_ensures(&self, query: &str) -> Vec<&FnEntry> {
-        let q = query.to_lowercase();
-        self.entries
+    /// Exact name match for types (fallback when fn lookup finds nothing).
+    pub fn lookup_type(&self, name: &str) -> Vec<&TypeEntry> {
+        self.type_entries
             .iter()
-            .filter(|e| {
-                e.ensures
-                    .iter()
-                    .any(|clause| clause.to_lowercase().contains(&q))
-            })
+            .filter(|e| e.name.eq_ignore_ascii_case(name))
             .take(MAX_RESULTS)
             .collect()
     }
 
-    /// Search within requires clauses.
-    pub fn search_requires(&self, query: &str) -> Vec<&FnEntry> {
-        let q = query.to_lowercase();
-        self.entries
+    /// Exact name match for traits.
+    pub fn lookup_trait(&self, name: &str) -> Vec<&TraitEntry> {
+        self.trait_entries
             .iter()
+            .filter(|e| e.name.eq_ignore_ascii_case(name))
+            .take(MAX_RESULTS)
+            .collect()
+    }
+
+    /// Filter helper for optional crate_name, module, name, and kind filters on FnEntry.
+    fn matches_fn_filters(
+        e: &FnEntry,
+        crate_name: Option<&str>,
+        module: Option<&str>,
+        name: Option<&str>,
+        kind: Option<FnKind>,
+    ) -> bool {
+        if let Some(c) = crate_name {
+            if !crate_name_matches(&e.crate_name, c) {
+                return false;
+            }
+        }
+        if let Some(m) = module {
+            if !e.module_path.to_lowercase().contains(&m.to_lowercase()) {
+                return false;
+            }
+        }
+        if let Some(n) = name {
+            if !e.name.to_lowercase().contains(&n.to_lowercase()) {
+                return false;
+            }
+        }
+        if let Some(k) = kind {
+            if e.kind != k {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Search within ensures clauses. Query supports regex (falls back to substring).
+    pub fn search_ensures(
+        &self,
+        query: &str,
+        crate_name: Option<&str>,
+        module: Option<&str>,
+        name: Option<&str>,
+        kind: Option<FnKind>,
+        offset: usize,
+        limit: usize,
+    ) -> SearchResult<'_> {
+        let m = Matcher::new(query);
+        let matches: Vec<&FnEntry> = self
+            .entries
+            .iter()
+            .filter(|e| Self::matches_fn_filters(e, crate_name, module, name, kind))
+            .filter(|e| {
+                e.ensures
+                    .iter()
+                    .any(|clause| m.is_match(clause))
+            })
+            .collect();
+
+        let total_count = matches.len();
+        let items = paginate(matches, offset, limit);
+
+        SearchResult { items, total_count }
+    }
+
+    /// Search within requires clauses. Query supports regex (falls back to substring).
+    pub fn search_requires(
+        &self,
+        query: &str,
+        crate_name: Option<&str>,
+        module: Option<&str>,
+        name: Option<&str>,
+        kind: Option<FnKind>,
+        offset: usize,
+        limit: usize,
+    ) -> SearchResult<'_> {
+        let m = Matcher::new(query);
+        let matches: Vec<&FnEntry> = self
+            .entries
+            .iter()
+            .filter(|e| Self::matches_fn_filters(e, crate_name, module, name, kind))
             .filter(|e| {
                 e.requires
                     .iter()
-                    .any(|clause| clause.to_lowercase().contains(&q))
+                    .any(|clause| m.is_match(clause))
             })
-            .take(MAX_RESULTS)
-            .collect()
+            .collect();
+
+        let total_count = matches.len();
+        let items = paginate(matches, offset, limit);
+
+        SearchResult { items, total_count }
+    }
+
+    /// Search within function bodies for usage of a lemma or pattern. Query supports regex (falls back to substring).
+    pub fn search_body(
+        &self,
+        query: &str,
+        crate_name: Option<&str>,
+        module: Option<&str>,
+        name: Option<&str>,
+        kind: Option<FnKind>,
+        offset: usize,
+        limit: usize,
+    ) -> SearchResult<'_> {
+        let m = Matcher::new(query);
+        let matches: Vec<&FnEntry> = self
+            .entries
+            .iter()
+            .filter(|e| Self::matches_fn_filters(e, crate_name, module, name, kind))
+            .filter(|e| {
+                e.body
+                    .as_ref()
+                    .map_or(false, |b| m.is_match(b))
+            })
+            .collect();
+
+        let total_count = matches.len();
+        let items = paginate(matches, offset, limit);
+
+        SearchResult { items, total_count }
+    }
+
+    /// Search within doc comments of functions. Query supports regex (falls back to substring).
+    pub fn search_doc(
+        &self,
+        query: &str,
+        crate_name: Option<&str>,
+        module: Option<&str>,
+        name: Option<&str>,
+        kind: Option<FnKind>,
+        offset: usize,
+        limit: usize,
+    ) -> SearchResult<'_> {
+        let m = Matcher::new(query);
+        let matches: Vec<&FnEntry> = self
+            .entries
+            .iter()
+            .filter(|e| Self::matches_fn_filters(e, crate_name, module, name, kind))
+            .filter(|e| {
+                e.doc_comment
+                    .as_ref()
+                    .map_or(false, |d| m.is_match(d))
+            })
+            .collect();
+
+        let total_count = matches.len();
+        let items = paginate(matches, offset, limit);
+
+        SearchResult { items, total_count }
+    }
+
+    /// Search within doc comments of types. Query supports regex (falls back to substring).
+    pub fn search_type_doc(
+        &self,
+        query: &str,
+        crate_name: Option<&str>,
+        module: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> TypeSearchResult<'_> {
+        let m = Matcher::new(query);
+        let matches: Vec<&TypeEntry> = self
+            .type_entries
+            .iter()
+            .filter(|e| {
+                if let Some(c) = crate_name {
+                    if !crate_name_matches(&e.crate_name, c) {
+                        return false;
+                    }
+                }
+                if let Some(mo) = module {
+                    if !e.module_path.to_lowercase().contains(&mo.to_lowercase()) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .filter(|e| {
+                e.doc_comment
+                    .as_ref()
+                    .map_or(false, |d| m.is_match(d))
+            })
+            .collect();
+
+        let total_count = matches.len();
+        let items = paginate(matches, offset, limit);
+
+        TypeSearchResult { items, total_count }
     }
 
     /// Search by signature types and trait bounds.
@@ -97,8 +441,11 @@ impl Index {
         kind: Option<FnKind>,
         crate_name: Option<&str>,
         module: Option<&str>,
-    ) -> Vec<&FnEntry> {
-        self.entries
+        offset: usize,
+        limit: usize,
+    ) -> SearchResult<'_> {
+        let mut matches: Vec<&FnEntry> = self
+            .entries
             .iter()
             .filter(|e| {
                 param_type.map_or(true, |q| {
@@ -125,20 +472,248 @@ impl Index {
                 })
             })
             .filter(|e| kind.map_or(true, |k| e.kind == k))
-            .filter(|e| crate_name.map_or(true, |c| e.crate_name.eq_ignore_ascii_case(c)))
+            .filter(|e| crate_name.map_or(true, |c| crate_name_matches(&e.crate_name, c)))
             .filter(|e| {
                 module.map_or(true, |m| {
                     e.module_path.to_lowercase().contains(&m.to_lowercase())
                 })
             })
-            .take(MAX_RESULTS)
+            .collect();
+
+        let total_count = matches.len();
+
+        // Rank by name when name filter is provided
+        if let Some(n) = name {
+            let n_lower = n.to_lowercase();
+            matches.sort_by(|a, b| {
+                let a_lower = a.name.to_lowercase();
+                let b_lower = b.name.to_lowercase();
+                let a_tier = if a_lower == n_lower {
+                    0
+                } else if a_lower.starts_with(&n_lower) {
+                    1
+                } else {
+                    2
+                };
+                let b_tier = if b_lower == n_lower {
+                    0
+                } else if b_lower.starts_with(&n_lower) {
+                    1
+                } else {
+                    2
+                };
+                a_tier.cmp(&b_tier).then(a.name.len().cmp(&b.name.len()))
+            });
+        }
+
+        let items = paginate(matches, offset, limit);
+
+        SearchResult {
+            items,
+            total_count,
+        }
+    }
+
+    /// Search types (structs, enums, type aliases) by name substring.
+    pub fn search_types(
+        &self,
+        query: &str,
+        crate_name: Option<&str>,
+        module: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> TypeSearchResult<'_> {
+        let q = query.to_lowercase();
+        let mut matches: Vec<&TypeEntry> = self
+            .type_entries
+            .iter()
+            .filter(|e| {
+                if let Some(c) = crate_name {
+                    if !crate_name_matches(&e.crate_name, c) {
+                        return false;
+                    }
+                }
+                if let Some(m) = module {
+                    if !e.module_path.to_lowercase().contains(&m.to_lowercase()) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .filter(|e| e.name.to_lowercase().contains(&q))
+            .collect();
+
+        let total_count = matches.len();
+
+        // Rank: exact > prefix > substring, then by name length
+        matches.sort_by(|a, b| {
+            let a_lower = a.name.to_lowercase();
+            let b_lower = b.name.to_lowercase();
+            let a_tier = if a_lower == q {
+                0
+            } else if a_lower.starts_with(&q) {
+                1
+            } else {
+                2
+            };
+            let b_tier = if b_lower == q {
+                0
+            } else if b_lower.starts_with(&q) {
+                1
+            } else {
+                2
+            };
+            a_tier.cmp(&b_tier).then(a.name.len().cmp(&b.name.len()))
+        });
+
+        let items = paginate(matches, offset, limit);
+
+        TypeSearchResult {
+            items,
+            total_count,
+        }
+    }
+
+    /// Search trait impls by trait name substring.
+    pub fn search_trait_impls(&self, trait_name: &str) -> Vec<&ImplEntry> {
+        let q = trait_name.to_lowercase();
+        self.impl_entries
+            .iter()
+            .filter(|e| {
+                e.trait_name
+                    .as_ref()
+                    .map_or(false, |t| t.to_lowercase().contains(&q))
+            })
             .collect()
     }
 
-    /// List all unique modules with item counts.
+    /// Fuzzy search by name using Jaro-Winkler similarity with 0.75 threshold.
+    pub fn search_fuzzy(&self, query: &str, limit: usize) -> SearchResult<'_> {
+        let q = query.to_lowercase();
+        let threshold = 0.75;
+
+        let mut scored: Vec<(&FnEntry, f64)> = self
+            .entries
+            .iter()
+            .map(|e| {
+                let score = strsim::jaro_winkler(&e.name.to_lowercase(), &q);
+                (e, score)
+            })
+            .filter(|(_, score)| *score >= threshold)
+            .collect();
+
+        let total_count = scored.len();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+
+        SearchResult {
+            items: scored.into_iter().map(|(e, _)| e).collect(),
+            total_count,
+        }
+    }
+
+    /// Browse a module: returns all functions and types whose module_path matches
+    /// (exact or prefix match).
+    pub fn browse_module(&self, path: &str) -> (Vec<&FnEntry>, Vec<&TypeEntry>) {
+        let p = path.to_lowercase();
+        let fns: Vec<&FnEntry> = self
+            .entries
+            .iter()
+            .filter(|e| {
+                let mp = e.module_path.to_lowercase();
+                mp == p || mp.starts_with(&format!("{}::", p))
+            })
+            .collect();
+        let types: Vec<&TypeEntry> = self
+            .type_entries
+            .iter()
+            .filter(|e| {
+                let mp = e.module_path.to_lowercase();
+                mp == p || mp.starts_with(&format!("{}::", p))
+            })
+            .collect();
+        (fns, types)
+    }
+
+    /// Find all functions that call a given function name.
+    pub fn find_callers(&self, name: &str) -> Vec<&FnEntry> {
+        self.callers
+            .get(name)
+            .map(|indices| {
+                indices
+                    .iter()
+                    .filter_map(|&i| self.entries.get(i))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Find all function names called by a given function name.
+    pub fn find_callees(&self, name: &str) -> Vec<&str> {
+        // Find the entry index for this name
+        self.entries
+            .iter()
+            .enumerate()
+            .find(|(_, e)| e.name == name)
+            .and_then(|(idx, _)| self.callees.get(idx))
+            .map(|set| set.iter().map(|s| s.as_str()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Compute stats: counts by kind, by crate, assume(false) count.
+    pub fn stats(&self) -> IndexStats {
+        let mut spec = 0usize;
+        let mut proof = 0usize;
+        let mut exec = 0usize;
+        let mut assume_false = 0usize;
+        let mut by_crate: std::collections::BTreeMap<String, CrateStats> =
+            std::collections::BTreeMap::new();
+
+        let assume_re = RegexBuilder::new(r"assume\s*\(\s*false\s*\)")
+            .case_insensitive(false)
+            .build()
+            .unwrap();
+
+        for e in &self.entries {
+            match e.kind {
+                FnKind::Spec => spec += 1,
+                FnKind::Proof => proof += 1,
+                FnKind::Exec => exec += 1,
+            }
+            let cs = by_crate.entry(e.crate_name.clone()).or_default();
+            cs.functions += 1;
+            if e.body.as_ref().map_or(false, |b| assume_re.is_match(b)) {
+                assume_false += 1;
+                cs.assume_false += 1;
+            }
+        }
+        for e in &self.type_entries {
+            by_crate.entry(e.crate_name.clone()).or_default().types += 1;
+        }
+        for e in &self.trait_entries {
+            by_crate.entry(e.crate_name.clone()).or_default().traits += 1;
+        }
+
+        IndexStats {
+            total_functions: self.entries.len(),
+            total_types: self.type_entries.len(),
+            total_traits: self.trait_entries.len(),
+            spec,
+            proof,
+            exec,
+            assume_false,
+            by_crate,
+        }
+    }
+
+    /// List all unique modules with item counts (functions + types).
     pub fn list_modules(&self) -> Vec<(String, usize)> {
         let mut map = std::collections::BTreeMap::<String, usize>::new();
         for e in &self.entries {
+            *map.entry(e.module_path.clone()).or_default() += 1;
+        }
+        for e in &self.type_entries {
             *map.entry(e.module_path.clone()).or_default() += 1;
         }
         map.into_iter().collect()

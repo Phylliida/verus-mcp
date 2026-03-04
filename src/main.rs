@@ -20,9 +20,15 @@ async fn main() -> Result<()> {
         .init();
 
     tracing::info!("Building index...");
-    let (entries, file_cache) = indexer::build_index();
-    let idx = index::Index::new(entries, file_cache);
-    tracing::info!("Index ready ({} items)", idx.len());
+    let (entries, type_entries, trait_entries, impl_entries, file_cache) = indexer::build_index();
+    let idx = index::Index::new(entries, type_entries, trait_entries, impl_entries, file_cache);
+    tracing::info!(
+        "Index ready ({} fns + {} types + {} traits + {} impls)",
+        idx.len(),
+        idx.type_len(),
+        idx.trait_len(),
+        idx.impl_len(),
+    );
 
     let service = server::VerusMcpServer::new(idx)
         .serve(stdio())

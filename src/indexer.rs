@@ -1,12 +1,12 @@
-use crate::parser;
-use crate::types::FnEntry;
+use crate::parser::{self, ParsedItems};
+use crate::types::{FnEntry, ImplEntry, TraitEntry, TypeEntry};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use walkdir::WalkDir;
 
-/// Per-file cache: maps absolute path → (mtime, parsed entries).
-pub type FileCache = HashMap<PathBuf, (SystemTime, Vec<FnEntry>)>;
+/// Per-file cache: maps absolute path → (mtime, parsed items).
+pub type FileCache = HashMap<PathBuf, (SystemTime, ParsedItems)>;
 
 /// Default crate source roots relative to the binary's working directory.
 const DEFAULT_ROOTS: &[(&str, &str)] = &[
@@ -84,12 +84,12 @@ fn find_workspace_root() -> PathBuf {
 }
 
 /// Build the full index from scratch (empty cache).
-pub fn build_index() -> (Vec<FnEntry>, FileCache) {
+pub fn build_index() -> (Vec<FnEntry>, Vec<TypeEntry>, Vec<TraitEntry>, Vec<ImplEntry>, FileCache) {
     build_index_incremental(&FileCache::new())
 }
 
 /// Incrementally rebuild the index, reusing cached entries for unchanged files.
-pub fn build_index_incremental(old_cache: &FileCache) -> (Vec<FnEntry>, FileCache) {
+pub fn build_index_incremental(old_cache: &FileCache) -> (Vec<FnEntry>, Vec<TypeEntry>, Vec<TraitEntry>, Vec<ImplEntry>, FileCache) {
     let workspace = find_workspace_root();
     let roots: Vec<(String, PathBuf)> = roots_from_env().unwrap_or_else(|| {
         DEFAULT_ROOTS
@@ -98,7 +98,10 @@ pub fn build_index_incremental(old_cache: &FileCache) -> (Vec<FnEntry>, FileCach
             .collect()
     });
 
-    let mut all_items = Vec::new();
+    let mut all_fns = Vec::new();
+    let mut all_types = Vec::new();
+    let mut all_traits = Vec::new();
+    let mut all_impls = Vec::new();
     let mut new_cache = FileCache::new();
     let mut reparsed = 0usize;
     let mut cached = 0usize;
@@ -121,10 +124,13 @@ pub fn build_index_incremental(old_cache: &FileCache) -> (Vec<FnEntry>, FileCach
             };
 
             // Check cache: reuse if mtime matches
-            if let Some((old_mtime, old_entries)) = old_cache.get(&file_path) {
+            if let Some((old_mtime, old_items)) = old_cache.get(&file_path) {
                 if *old_mtime == mtime {
-                    all_items.extend(old_entries.iter().cloned());
-                    new_cache.insert(file_path, (mtime, old_entries.clone()));
+                    all_fns.extend(old_items.functions.iter().cloned());
+                    all_types.extend(old_items.types.iter().cloned());
+                    all_traits.extend(old_items.traits.iter().cloned());
+                    all_impls.extend(old_items.impls.iter().cloned());
+                    new_cache.insert(file_path, (mtime, old_items.clone()));
                     cached += 1;
                     continue;
                 }
@@ -150,8 +156,11 @@ pub fn build_index_incremental(old_cache: &FileCache) -> (Vec<FnEntry>, FileCach
 
             match parser::extract_items(&source, &display_path, crate_name, &module_path) {
                 Ok(items) => {
-                    new_cache.insert(file_path, (mtime, items.clone()));
-                    all_items.extend(items);
+                    all_fns.extend(items.functions.iter().cloned());
+                    all_types.extend(items.types.iter().cloned());
+                    all_traits.extend(items.traits.iter().cloned());
+                    all_impls.extend(items.impls.iter().cloned());
+                    new_cache.insert(file_path, (mtime, items));
                     reparsed += 1;
                 }
                 Err(e) => {
@@ -164,11 +173,14 @@ pub fn build_index_incremental(old_cache: &FileCache) -> (Vec<FnEntry>, FileCach
 
     let deleted = old_cache.len().saturating_sub(cached);
     tracing::info!(
-        "{} items, {} reparsed, {} cached, {} deleted",
-        all_items.len(),
+        "{} fns + {} types + {} traits + {} impls, {} reparsed, {} cached, {} deleted",
+        all_fns.len(),
+        all_types.len(),
+        all_traits.len(),
+        all_impls.len(),
         reparsed,
         cached,
         deleted,
     );
-    (all_items, new_cache)
+    (all_fns, all_types, all_traits, all_impls, new_cache)
 }
