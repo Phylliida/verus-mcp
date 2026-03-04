@@ -5,6 +5,18 @@ use std::collections::{HashMap, HashSet};
 
 pub const MAX_RESULTS: usize = 50;
 
+fn short_filename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+pub struct Suggestion {
+    pub name: String,
+    pub label: String,
+    pub module_path: String,
+    pub location: String,
+    pub score: f64,
+}
+
 /// A compiled matcher: regex if the query parses as one, otherwise plain substring.
 pub enum Matcher {
     Regex(regex::Regex),
@@ -611,6 +623,76 @@ impl Index {
             items: scored.into_iter().map(|(e, _)| e).collect(),
             total_count,
         }
+    }
+
+    /// Compute similarity between a name and query (both already lowercased).
+    /// Substring containment scores 0.9, otherwise Jaro-Winkler.
+    fn similarity_score(name: &str, query: &str) -> f64 {
+        if name == query {
+            1.0
+        } else if name.contains(query) || query.contains(name) {
+            0.9
+        } else {
+            strsim::jaro_winkler(name, query)
+        }
+    }
+
+    /// Suggest similar names across all indexed items (functions, types, traits).
+    /// Used for "Did you mean?" when a search returns no results.
+    pub fn suggest(&self, query: &str, limit: usize) -> Vec<Suggestion> {
+        let q = query.to_lowercase();
+        let threshold = 0.7;
+
+        let mut suggestions: Vec<Suggestion> = Vec::new();
+
+        for e in &self.entries {
+            let score = Self::similarity_score(&e.name.to_lowercase(), &q);
+            if score >= threshold {
+                suggestions.push(Suggestion {
+                    name: e.name.clone(),
+                    label: format!("[{}]", e.kind),
+                    module_path: e.module_path.clone(),
+                    location: format!("{}:{}", short_filename(&e.file_path), e.line),
+                    score,
+                });
+            }
+        }
+
+        for e in &self.type_entries {
+            let score = Self::similarity_score(&e.name.to_lowercase(), &q);
+            if score >= threshold {
+                suggestions.push(Suggestion {
+                    name: e.name.clone(),
+                    label: format!("[{}]", e.item_kind),
+                    module_path: e.module_path.clone(),
+                    location: format!("{}:{}", short_filename(&e.file_path), e.line),
+                    score,
+                });
+            }
+        }
+
+        for e in &self.trait_entries {
+            let score = Self::similarity_score(&e.name.to_lowercase(), &q);
+            if score >= threshold {
+                suggestions.push(Suggestion {
+                    name: e.name.clone(),
+                    label: "[trait]".to_string(),
+                    module_path: e.module_path.clone(),
+                    location: format!("{}:{}", short_filename(&e.file_path), e.line),
+                    score,
+                });
+            }
+        }
+
+        suggestions.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut seen = HashSet::new();
+        suggestions.retain(|s| seen.insert(s.name.clone()));
+        suggestions.truncate(limit);
+        suggestions
     }
 
     /// Browse a module: returns all functions and types whose module_path matches

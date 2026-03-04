@@ -83,6 +83,18 @@ fn find_workspace_root() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
+/// Return the resolved source root directories for watching.
+pub fn resolve_roots() -> Vec<PathBuf> {
+    let workspace = find_workspace_root();
+    let roots: Vec<(String, PathBuf)> = roots_from_env().unwrap_or_else(|| {
+        DEFAULT_ROOTS
+            .iter()
+            .map(|(name, rel)| (name.to_string(), workspace.join(rel)))
+            .collect()
+    });
+    roots.into_iter().map(|(_, p)| p).filter(|p| p.is_dir()).collect()
+}
+
 /// Build the full index from scratch (empty cache).
 pub fn build_index() -> (Vec<FnEntry>, Vec<TypeEntry>, Vec<TraitEntry>, Vec<ImplEntry>, FileCache) {
     build_index_incremental(&FileCache::new())

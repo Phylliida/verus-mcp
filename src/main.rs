@@ -3,9 +3,11 @@ mod indexer;
 mod parser;
 mod server;
 mod types;
+mod watcher;
 
 use anyhow::Result;
 use rmcp::{ServiceExt, transport::stdio};
+use std::sync::{Arc, RwLock};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -30,7 +32,13 @@ async fn main() -> Result<()> {
         idx.impl_len(),
     );
 
-    let service = server::VerusMcpServer::new(idx)
+    let shared_index = Arc::new(RwLock::new(idx));
+
+    // Spawn file watcher for auto-reindex
+    let roots = indexer::resolve_roots();
+    tokio::spawn(watcher::watch_and_reindex(shared_index.clone(), roots));
+
+    let service = server::VerusMcpServer::new(shared_index)
         .serve(stdio())
         .await
         .inspect_err(|e| tracing::error!("serving error: {:?}", e))?;

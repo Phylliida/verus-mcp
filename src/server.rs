@@ -92,6 +92,22 @@ pub struct DependencyParams {
     pub direction: Option<String>,
 }
 
+/// Format "Did you mean:" suggestions, or empty string if none found.
+fn format_did_you_mean(idx: &Index, query: &str) -> String {
+    let suggestions = idx.suggest(query, 5);
+    if suggestions.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from("\n\nDid you mean:");
+    for s in &suggestions {
+        text.push_str(&format!(
+            "\n  {} {}  ({})  {}",
+            s.label, s.name, s.location, s.module_path
+        ));
+    }
+    text
+}
+
 fn parse_kind(s: &str) -> Option<FnKind> {
     match s.to_lowercase().as_str() {
         "spec" => Some(FnKind::Spec),
@@ -125,9 +141,9 @@ pub struct VerusMcpServer {
 
 #[tool_router]
 impl VerusMcpServer {
-    pub fn new(index: Index) -> Self {
+    pub fn new(index: Arc<RwLock<Index>>) -> Self {
         Self {
-            index: Arc::new(RwLock::new(index)),
+            index,
             tool_router: Self::tool_router(),
         }
     }
@@ -188,10 +204,41 @@ impl VerusMcpServer {
         }
 
         if result.items.is_empty() && text.trim().is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "No results for '{}'",
-                params.query
-            ))]));
+            let mut msg = format!("No results for '{}'", params.query);
+
+            // Note active filters and check if removing them helps
+            let has_filters = params.kind.is_some()
+                || params.crate_name.is_some()
+                || params.module.is_some()
+                || params.trait_only;
+            if has_filters {
+                let mut filter_parts = Vec::new();
+                if let Some(ref k) = params.kind {
+                    filter_parts.push(format!("kind={}", k));
+                }
+                if let Some(ref c) = params.crate_name {
+                    filter_parts.push(format!("crate={}", c));
+                }
+                if let Some(ref m) = params.module {
+                    filter_parts.push(format!("module={}", m));
+                }
+                if params.trait_only {
+                    filter_parts.push("trait_only".to_string());
+                }
+                let unfiltered = idx.search(&params.query, None, None, None, false, 0, 1);
+                if unfiltered.total_count > 0 {
+                    msg = format!(
+                        "No results for '{}' with {} ({} matches without filters)",
+                        params.query,
+                        filter_parts.join(", "),
+                        unfiltered.total_count
+                    );
+                }
+            }
+
+            msg.push_str(&format_did_you_mean(&idx, &params.query));
+
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
 
         let count = format_count(result.items.len(), result.total_count, offset);
@@ -233,10 +280,9 @@ impl VerusMcpServer {
             return Ok(CallToolResult::success(vec![Content::text(text)]));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "No function or type named '{}'",
-            params.name
-        ))]))
+        let mut msg = format!("No function or type named '{}'", params.name);
+        msg.push_str(&format_did_you_mean(&idx, &params.name));
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
     #[tool(description = "Look up multiple Verus functions/types by exact name in one call. Returns full signatures with requires/ensures clauses. Max 10 names per call.")]
@@ -468,10 +514,9 @@ impl VerusMcpServer {
         let result = idx.search_types(&params.query, params.crate_name.as_deref(), params.module.as_deref(), offset, limit);
 
         if result.items.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "No types matching '{}'",
-                params.query
-            ))]));
+            let mut msg = format!("No types matching '{}'", params.query);
+            msg.push_str(&format_did_you_mean(&idx, &params.query));
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
 
         let text: String = result
@@ -537,10 +582,9 @@ impl VerusMcpServer {
         let impls = idx.search_trait_impls(&params.name);
 
         if traits.is_empty() && impls.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "No trait or impls matching '{}'",
-                params.name
-            ))]));
+            let mut msg = format!("No trait or impls matching '{}'", params.name);
+            msg.push_str(&format_did_you_mean(&idx, &params.name));
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
 
         let mut text = String::new();
@@ -701,10 +745,12 @@ impl VerusMcpServer {
             "callees" => {
                 let callees = idx.find_callees(&params.name);
                 if callees.is_empty() {
-                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                    let mut msg = format!(
                         "'{}' calls no known functions (or has no body)",
                         params.name
-                    ))]));
+                    );
+                    msg.push_str(&format_did_you_mean(&idx, &params.name));
+                    return Ok(CallToolResult::success(vec![Content::text(msg)]));
                 }
                 let mut sorted = callees;
                 sorted.sort();
@@ -719,10 +765,9 @@ impl VerusMcpServer {
                 // "callers" (default)
                 let callers = idx.find_callers(&params.name);
                 if callers.is_empty() {
-                    return Ok(CallToolResult::success(vec![Content::text(format!(
-                        "No callers found for '{}'",
-                        params.name
-                    ))]));
+                    let mut msg = format!("No callers found for '{}'", params.name);
+                    msg.push_str(&format_did_you_mean(&idx, &params.name));
+                    return Ok(CallToolResult::success(vec![Content::text(msg)]));
                 }
                 let text: String = callers
                     .iter()
