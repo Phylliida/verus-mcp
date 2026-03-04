@@ -12,11 +12,16 @@ fn parse_qualified_name(input: &str) -> (Option<&str>, &str) {
     if let Some(pos) = input.rfind("::") {
         let module_part = &input[..pos];
         let name_part = &input[pos + 2..];
-        // Strip leading "crate::" if present
+        // Strip leading "crate::" or bare "crate" (crate root)
         let module_part = module_part
             .strip_prefix("crate::")
             .unwrap_or(module_part);
-        (Some(module_part), name_part)
+        if module_part == "crate" {
+            // crate::foo → crate-root item, match by name only against empty module_path
+            (Some(""), name_part)
+        } else {
+            (Some(module_part), name_part)
+        }
     } else {
         (None, input)
     }
