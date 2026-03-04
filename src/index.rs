@@ -5,6 +5,46 @@ use std::collections::{HashMap, HashSet};
 
 pub const MAX_RESULTS: usize = 50;
 
+/// Parse a potentially qualified name like `crate::vec2::ops::foo` into (module_prefix, name).
+/// Returns `None` for the module prefix when the name is unqualified.
+/// Strips leading `crate::` or `crate_name::` prefixes.
+fn parse_qualified_name(input: &str) -> (Option<&str>, &str) {
+    if let Some(pos) = input.rfind("::") {
+        let module_part = &input[..pos];
+        let name_part = &input[pos + 2..];
+        // Strip leading "crate::" if present
+        let module_part = module_part
+            .strip_prefix("crate::")
+            .unwrap_or(module_part);
+        (Some(module_part), name_part)
+    } else {
+        (None, input)
+    }
+}
+
+/// Check if a module_path matches the given qualifier.
+/// The qualifier might be a suffix of the full module path (e.g., "vec2::ops" matches "vec2::ops")
+/// or it might include a crate name prefix that we should match against crate_name::module_path.
+fn module_matches(module_path: &str, crate_name: &str, qualifier: &str) -> bool {
+    // Direct match
+    if module_path.eq_ignore_ascii_case(qualifier) {
+        return true;
+    }
+    // Qualifier might be crate_name::module_path
+    let full_path = format!("{}::{}", crate_name, module_path);
+    if full_path.eq_ignore_ascii_case(qualifier) {
+        return true;
+    }
+    // Qualifier might be a suffix (e.g., "ops" matching "vec2::ops")
+    if module_path.ends_with(qualifier)
+        && (module_path.len() == qualifier.len()
+            || module_path.as_bytes()[module_path.len() - qualifier.len() - 1] == b':')
+    {
+        return true;
+    }
+    false
+}
+
 fn short_filename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
@@ -231,27 +271,45 @@ impl Index {
 
     /// Exact name match for functions.
     pub fn lookup(&self, name: &str) -> Vec<&FnEntry> {
+        let (qualifier, bare_name) = parse_qualified_name(name);
         self.entries
             .iter()
-            .filter(|e| e.name.eq_ignore_ascii_case(name))
+            .filter(|e| {
+                e.name.eq_ignore_ascii_case(bare_name)
+                    && qualifier.map_or(true, |q| {
+                        module_matches(&e.module_path, &e.crate_name, q)
+                    })
+            })
             .take(MAX_RESULTS)
             .collect()
     }
 
     /// Exact name match for types (fallback when fn lookup finds nothing).
     pub fn lookup_type(&self, name: &str) -> Vec<&TypeEntry> {
+        let (qualifier, bare_name) = parse_qualified_name(name);
         self.type_entries
             .iter()
-            .filter(|e| e.name.eq_ignore_ascii_case(name))
+            .filter(|e| {
+                e.name.eq_ignore_ascii_case(bare_name)
+                    && qualifier.map_or(true, |q| {
+                        module_matches(&e.module_path, &e.crate_name, q)
+                    })
+            })
             .take(MAX_RESULTS)
             .collect()
     }
 
     /// Exact name match for traits.
     pub fn lookup_trait(&self, name: &str) -> Vec<&TraitEntry> {
+        let (qualifier, bare_name) = parse_qualified_name(name);
         self.trait_entries
             .iter()
-            .filter(|e| e.name.eq_ignore_ascii_case(name))
+            .filter(|e| {
+                e.name.eq_ignore_ascii_case(bare_name)
+                    && qualifier.map_or(true, |q| {
+                        module_matches(&e.module_path, &e.crate_name, q)
+                    })
+            })
             .take(MAX_RESULTS)
             .collect()
     }
