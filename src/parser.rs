@@ -851,4 +851,270 @@ mod tests {
         assert_eq!(f.kind, FnKind::Proof);
         assert!(!f.ensures.is_empty(), "should have ensures clause");
     }
+
+    #[test]
+    fn test_verus_block_parsing() {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_verus::LANGUAGE.into()).unwrap();
+
+        // Minimal verus block
+        let source = "verus! { }";
+        let tree = parser.parse(source.as_bytes(), None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(root.child(0).unwrap().kind(), "verus_block",
+            "minimal verus! should parse as verus_block, got: {}", root.to_sexp());
+
+        // verus block with function
+        let source2 = "verus! {\npub spec fn foo() -> bool { true }\n}";
+        let tree2 = parser.parse(source2.as_bytes(), None).unwrap();
+        let root2 = tree2.root_node();
+        assert_eq!(root2.child(0).unwrap().kind(), "verus_block");
+
+        // Test with use declarations before verus block
+        let source3 = "use vstd::prelude::*;\nuse crate::traits::ring::Ring;\n\nverus! {\n\npub spec fn binom(n: nat, k: nat) -> nat {\n    if k == 0 { 1 }\n    else if k > n { 0 }\n    else { binom(n - 1, k - 1) + binom(n - 1, k) }\n}\n\n}\n";
+        let tree3 = parser.parse(source3.as_bytes(), None).unwrap();
+        let root3 = tree3.root_node();
+        eprintln!("With use+verus: root={}", root3.kind());
+        let mut cursor3 = root3.walk();
+        for child in root3.children(&mut cursor3) {
+            eprintln!("  {} [{}:{}-{}:{}]",
+                child.kind(),
+                child.start_position().row, child.start_position().column,
+                child.end_position().row, child.end_position().column);
+        }
+
+        // Read the real file lines
+        let real_source = std::fs::read_to_string(
+            "/Users/yams/Prog/verus-cad/verus-algebra/src/binomial/mod.rs"
+        ).unwrap();
+        let lines: Vec<&str> = real_source.lines().collect();
+
+        // lines 0-11: use declarations
+        // line 12: verus! {
+        // lines 13-708: content
+        // line 709: } // verus!
+
+        // The binary search found line 170 breaks it. Try:
+        // 1. Lines 13-169 (works)
+        // 2. Lines 13-170 (breaks)
+        // 3. Just the function containing line 170 (lines 159-575)
+
+        // Test the actual full function in verus! block
+        let real_source = std::fs::read_to_string(
+            "/Users/yams/Prog/verus-cad/verus-algebra/src/binomial/mod.rs"
+        ).unwrap();
+        let lines: Vec<&str> = real_source.lines().collect();
+
+        // Just the one function: lines 159-575 (0-indexed, inclusive)
+        let mut test = String::new();
+        test.push_str("verus! {\n");
+        for i in 159..=575 {
+            test.push_str(lines[i]);
+            test.push('\n');
+        }
+        test.push_str("}\n");
+        let tree = parser.parse(test.as_bytes(), None).unwrap();
+        let root = tree.root_node();
+        let has_vb = root.children(&mut root.walk()).any(|c| c.kind() == "verus_block");
+        eprintln!("Full function: verus_block={}, error={}", has_vb, root.has_error());
+
+        // Binary search by including chunks and closing all braces properly
+        // Strategy: try just base case (n==0), just else case, etc.
+        // Base case: lines 159-224(ish), Else case starts around 227
+        // Let me check: line 176 = if n == 0 {, line ~225 = } else {
+        // Let me try first half of body only with proper brace closing
+        let halves = [
+            ("base_case", 159, 226),   // if n == 0 { ... }
+            ("else_case", 159, 575),   // full function
+        ];
+
+        // Actually, let me just find which source line causes parse errors
+        // by testing individual lines' impact
+        // Test: full function but strip non-ASCII from comments
+        let mut test_ascii = String::new();
+        test_ascii.push_str("verus! {\n");
+        for i in 159..=575 {
+            let line = lines[i];
+            if line.trim_start().starts_with("//") {
+                // Replace non-ASCII in comments
+                let ascii_line: String = line.chars().map(|c| if c.is_ascii() { c } else { '=' }).collect();
+                test_ascii.push_str(&ascii_line);
+            } else {
+                test_ascii.push_str(line);
+            }
+            test_ascii.push('\n');
+        }
+        test_ascii.push_str("}\n");
+        let tree = parser.parse(test_ascii.as_bytes(), None).unwrap();
+        let root = tree.root_node();
+        let has_vb = root.children(&mut root.walk()).any(|c| c.kind() == "verus_block");
+        eprintln!("ASCII-only comments: verus_block={}, error={}", has_vb, root.has_error());
+
+        // Find the else line to split the function
+        let else_line = (170..575).find(|&i| lines[i].trim() == "} else {").unwrap_or(575);
+        eprintln!("else at line {}: {:?}", else_line, lines.get(else_line));
+
+        // Test: sig + base case only
+        let mut test_base = String::new();
+        test_base.push_str("verus! {\n");
+        for i in 159..=169 { test_base.push_str(lines[i]); test_base.push('\n'); }
+        for i in 170..else_line { test_base.push_str(lines[i]); test_base.push('\n'); }
+        test_base.push_str("    }\n}\n}\n"); // close if, fn, verus
+        let t = parser.parse(test_base.as_bytes(), None).unwrap();
+        eprintln!("Base case only: verus_block={}, error={}",
+            t.root_node().children(&mut t.root_node().walk()).any(|c| c.kind() == "verus_block"),
+            t.root_node().has_error());
+
+        // Test: sig + else case only (without the let f)
+        let mut test_else = String::new();
+        test_else.push_str("verus! {\n");
+        for i in 159..=169 { test_else.push_str(lines[i]); test_else.push('\n'); }
+        // skip let f closure, go straight into body
+        test_else.push_str("    assert(true);\n");
+        test_else.push_str("}\n}\n");
+        let t = parser.parse(test_else.as_bytes(), None).unwrap();
+        eprintln!("Simple body: verus_block={}, error={}",
+            t.root_node().children(&mut t.root_node().walk()).any(|c| c.kind() == "verus_block"),
+            t.root_node().has_error());
+
+        // Binary search in else block: find which line breaks it
+        // else block: lines 228 to 573 (content inside } else { ... })
+        // We need the } to close 'if n == 0' at line 573/574
+        let else_content_start = 228;
+        let else_content_end = 573; // line before closing }
+
+        let test_fn = |end_line: usize| -> bool {
+            let mut parser2 = tree_sitter::Parser::new();
+            parser2.set_language(&tree_sitter_verus::LANGUAGE.into()).unwrap();
+
+            let mut test = String::new();
+            test.push_str("verus! {\n");
+            for i in 159..=175 { test.push_str(lines[i]); test.push('\n'); }
+            test.push_str("    if n == 0 {\n        assert(true);\n    } else {\n");
+            for i in else_content_start..=end_line {
+                test.push_str(lines[i]);
+                test.push('\n');
+            }
+            test.push_str("    }\n}\n}\n"); // close else, fn, verus
+            let t = parser2.parse(test.as_bytes(), None).unwrap();
+            !t.root_node().has_error()
+        };
+
+        // First check: does the full else block fail?
+        eprintln!("Full else block: ok={}", test_fn(else_content_end));
+
+        // Check what errors exist in files that DO parse as verus_block but have errors
+        fn find_errors(node: &tree_sitter::Node, source: &str, depth: usize) {
+            if node.has_error() {
+                let indent = "  ".repeat(depth);
+                if node.is_error() {
+                    let text: String = node.utf8_text(source.as_bytes()).unwrap_or("?")
+                        .chars().take(100).collect();
+                    eprintln!("{}ERROR [{}:{}-{}:{}]: {:?}",
+                        indent,
+                        node.start_position().row, node.start_position().column,
+                        node.end_position().row, node.end_position().column,
+                        text);
+                } else if node.is_missing() {
+                    eprintln!("{}MISSING {} [{}:{}]",
+                        indent, node.kind(),
+                        node.start_position().row, node.start_position().column);
+                } else {
+                    let mut cursor = node.walk();
+                    for child in node.children(&mut cursor) {
+                        if child.has_error() {
+                            find_errors(&child, source, depth + 1);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Test: full signature + full body in verus! block
+        let real_source = std::fs::read_to_string(
+            "/Users/yams/Prog/verus-cad/verus-algebra/src/binomial/mod.rs"
+        ).unwrap();
+        let body_lines: Vec<&str> = real_source.lines().collect();
+
+        // Full function: lines 159-575
+        let mut full_fn = String::new();
+        full_fn.push_str("verus! {\n");
+        for i in 159..=575 {
+            full_fn.push_str(body_lines[i]);
+            full_fn.push('\n');
+        }
+        full_fn.push_str("}\n");
+
+        let mut p2 = tree_sitter::Parser::new();
+        p2.set_language(&tree_sitter_verus::LANGUAGE.into()).unwrap();
+        let t = p2.parse(full_fn.as_bytes(), None).unwrap();
+        let root = t.root_node();
+        let has_vb = root.children(&mut root.walk()).any(|c| c.kind() == "verus_block");
+        eprintln!("Full fn in verus!: verus_block={}, error={}", has_vb, root.has_error());
+
+        // Simplified signature + full body
+        let mut simple_sig = String::new();
+        simple_sig.push_str("verus! {\npub proof fn lemma_binomial_theorem<R: Ring>(a: R, b: R, n: nat)\n    ensures true,\n    decreases n,\n{\n");
+        for i in 170..=574 {
+            simple_sig.push_str(body_lines[i]);
+            simple_sig.push('\n');
+        }
+        simple_sig.push_str("}\n}\n");
+        let t2 = p2.parse(simple_sig.as_bytes(), None).unwrap();
+        let r2 = t2.root_node();
+        eprintln!("Simple sig + full body: verus_block={}, error={}",
+            r2.children(&mut r2.walk()).any(|c| c.kind() == "verus_block"),
+            r2.has_error());
+
+        // Test: add ; after assert forall ... by { } blocks
+        let real_source = std::fs::read_to_string(
+            "/Users/yams/Prog/verus-cad/verus-algebra/src/binomial/mod.rs"
+        ).unwrap();
+        let body_lines: Vec<&str> = real_source.lines().collect();
+
+        // Add ; after } that closes assert forall by { } blocks
+        let mut patched = String::new();
+        patched.push_str("verus! {\n");
+        let mut in_assert_by = 0i32;
+        for i in 159..=575 {
+            let trimmed = body_lines[i].trim();
+            if trimmed.starts_with("assert forall") && trimmed.ends_with("by {") {
+                patched.push_str(body_lines[i]);
+                patched.push('\n');
+                in_assert_by = 1;
+                continue;
+            }
+            if in_assert_by > 0 {
+                let opens: i32 = body_lines[i].chars().filter(|&c| c == '{').count() as i32;
+                let closes: i32 = body_lines[i].chars().filter(|&c| c == '}').count() as i32;
+                in_assert_by += opens - closes;
+                if in_assert_by <= 0 {
+                    // This is the closing } — add ;
+                    patched.push_str(body_lines[i]);
+                    patched.push_str(";");
+                    patched.push('\n');
+                    in_assert_by = 0;
+                    continue;
+                }
+            }
+            // Also handle assert(expr) by { } (single line)
+            if trimmed.starts_with("assert(") && trimmed.ends_with("by { };") {
+                // already has ;, skip
+            }
+            patched.push_str(body_lines[i]);
+            patched.push('\n');
+        }
+        patched.push_str("}\n");
+
+        let mut p3 = tree_sitter::Parser::new();
+        p3.set_language(&tree_sitter_verus::LANGUAGE.into()).unwrap();
+        let t = p3.parse(patched.as_bytes(), None).unwrap();
+        let r = t.root_node();
+        eprintln!("Patched (added ;): verus_block={}, error={}",
+            r.children(&mut r.walk()).any(|c| c.kind() == "verus_block"),
+            r.has_error());
+        if r.has_error() {
+            find_errors(&r, &patched, 0);
+        }
+    }
 }
