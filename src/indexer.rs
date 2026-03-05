@@ -74,7 +74,7 @@ fn roots_from_env() -> Option<Vec<(String, PathBuf)>> {
 
 /// Resolve the base directory — walk up from cwd looking for a directory
 /// that contains the expected crate dirs.
-fn find_workspace_root() -> PathBuf {
+pub fn find_workspace_root() -> PathBuf {
     if let Ok(val) = std::env::var("VERUS_MCP_WORKSPACE") {
         return PathBuf::from(val);
     }

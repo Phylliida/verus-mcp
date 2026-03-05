@@ -86,11 +86,51 @@ pub struct SignatureSearchParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct CheckParams {
+    /// Crate directory name (e.g., "verus-geometry", "verus-topology")
+    pub crate_name: String,
+    /// Optional: verify only this module. Accepts a file path (e.g., "src/runtime/polygon.rs")
+    /// or module path (e.g., "runtime::polygon"). Bypasses check.sh and runs cargo verus directly.
+    pub module: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DependencyParams {
     /// Function name to find dependencies for
     pub name: String,
     /// Direction: "callers" (who calls this function) or "callees" (what this function calls). Default: "callers"
     pub direction: Option<String>,
+}
+
+/// Convert a file path or module path to a Verus --verify-module argument.
+/// Accepts: "src/runtime/polygon.rs", "runtime/polygon.rs", "runtime::polygon"
+/// Returns: "verus_geometry::runtime::polygon"
+fn to_verify_module(crate_name: &str, input: &str) -> String {
+    let crate_mod = crate_name.replace('-', "_");
+
+    // If it already looks like a module path (has :: and no /), just ensure crate prefix
+    if input.contains("::") && !input.contains('/') {
+        if input.starts_with(&crate_mod) {
+            return input.to_string();
+        }
+        if input.starts_with("crate::") {
+            return format!("{}{}", crate_mod, &input["crate".len()..]);
+        }
+        return format!("{}::{}", crate_mod, input);
+    }
+
+    // File path: strip src/ prefix and .rs suffix, convert / to ::
+    let rel = input.strip_prefix("src/").unwrap_or(input);
+    let rel = rel.strip_suffix(".rs").unwrap_or(rel);
+    let module = rel
+        .replace('/', "::")
+        .replace("::mod", "");
+
+    if module.is_empty() || module == "lib" || module == "main" {
+        crate_mod
+    } else {
+        format!("{}::{}", crate_mod, module)
+    }
 }
 
 /// Format "Did you mean:" suggestions, or empty string if none found.
@@ -853,6 +893,220 @@ impl VerusMcpServer {
                 ))]))
             }
         }
+    }
+
+    #[tool(description = "Run Verus verification on a crate. Returns summary on success, or error diagnostics on failure. Timeout: 10 minutes.")]
+    pub async fn check(
+        &self,
+        Parameters(params): Parameters<CheckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let workspace = indexer::find_workspace_root();
+        let crate_dir = workspace.join(&params.crate_name);
+        let script = crate_dir.join("scripts/check.sh");
+
+        if !crate_dir.join("src").is_dir() {
+            // List available crates
+            let mut available = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&workspace) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("verus-") && entry.path().join("src").is_dir() {
+                        available.push(name);
+                    }
+                }
+            }
+            available.sort();
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Crate '{}' not found\n\nAvailable crates: {}",
+                params.crate_name,
+                available.join(", ")
+            ))]));
+        }
+
+        use tokio::process::Command;
+
+        // Single-module verification: run cargo verus directly with --verify-module
+        if let Some(ref module_input) = params.module {
+            let verify_module = to_verify_module(&params.crate_name, module_input);
+            let default_verus_root = workspace.join("verus");
+            let script = format!(
+                r#"set -euo pipefail
+VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
+VERUS_SOURCE="$VERUS_ROOT/source"
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64)  TOOLCHAIN="1.93.0-aarch64-apple-darwin" ;;
+  Darwin-x86_64) TOOLCHAIN="1.93.0-x86_64-apple-darwin" ;;
+  *)             TOOLCHAIN="1.93.0-x86_64-unknown-linux-gnu" ;;
+esac
+export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
+export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
+export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
+cargo verus verify --manifest-path Cargo.toml -p {pkg} -- --verify-module {module} --triggers-mode silent
+"#,
+                default_verus_root = default_verus_root.display(),
+                pkg = params.crate_name,
+                module = verify_module,
+            );
+
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(600),
+                Command::new("bash")
+                    .arg("-c")
+                    .arg(&script)
+                    .current_dir(&crate_dir)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .output(),
+            )
+            .await;
+
+            let output = match result {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => {
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Failed to run cargo verus: {}", e
+                    ))]));
+                }
+                Err(_) => {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "cargo verus timed out after 10 minutes",
+                    )]));
+                }
+            };
+
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+
+            return self.parse_verus_output(&params.crate_name, &combined);
+        }
+
+        // Full crate verification via check.sh
+        if !script.exists() {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "No check.sh found for '{}' (try passing module for direct cargo verus)",
+                params.crate_name,
+            ))]));
+        }
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(600),
+            Command::new("bash")
+                .arg("scripts/check.sh")
+                .current_dir(&crate_dir)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output(),
+        )
+        .await;
+
+        let output = match result {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Failed to run check.sh: {}",
+                    e
+                ))]));
+            }
+            Err(_) => {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    "check.sh timed out after 10 minutes",
+                )]));
+            }
+        };
+
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+
+        self.parse_verus_output(&params.crate_name, &combined)
+    }
+
+    /// Parse cargo verus output into a structured result.
+    fn parse_verus_output(
+        &self,
+        crate_name: &str,
+        combined: &str,
+    ) -> Result<CallToolResult, McpError> {
+        let summary_re =
+            regex::Regex::new(r"verification results::\s*(\d+) verified,\s*(\d+) errors")
+                .unwrap();
+
+        if let Some(caps) = summary_re.captures_iter(combined).last() {
+            let verified: usize = caps[1].parse().unwrap_or(0);
+            let errors: usize = caps[2].parse().unwrap_or(0);
+
+            if errors == 0 {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "{}: {} verified, 0 errors",
+                    crate_name, verified
+                ))]));
+            }
+
+            // Extract error blocks
+            let mut error_blocks: Vec<String> = Vec::new();
+            let mut current_block: Vec<String> = Vec::new();
+            let mut in_error = false;
+
+            for line in combined.lines() {
+                if (line.starts_with("error:") || line.starts_with("error["))
+                    && !line.contains("Verus verification summary")
+                {
+                    if in_error && !current_block.is_empty() {
+                        error_blocks.push(current_block.join("\n"));
+                        current_block.clear();
+                    }
+                    in_error = true;
+                    current_block.push(line.to_string());
+                } else if in_error {
+                    let trimmed = line.trim_start();
+                    if trimmed.is_empty() {
+                        error_blocks.push(current_block.join("\n"));
+                        current_block.clear();
+                        in_error = false;
+                    } else if trimmed.starts_with('|')
+                        || trimmed.starts_with("-->")
+                        || trimmed.starts_with("note:")
+                        || trimmed.starts_with("help:")
+                        || trimmed.starts_with("=")
+                        || line.starts_with(' ')
+                    {
+                        current_block.push(line.to_string());
+                    } else {
+                        error_blocks.push(current_block.join("\n"));
+                        current_block.clear();
+                        in_error = false;
+                    }
+                }
+            }
+            if !current_block.is_empty() {
+                error_blocks.push(current_block.join("\n"));
+            }
+
+            // Deduplicate (check.sh cats the log on error, producing duplicates)
+            let mut seen = std::collections::HashSet::new();
+            error_blocks.retain(|b| seen.insert(b.clone()));
+
+            let mut text = error_blocks.join("\n\n");
+            text.push_str(&format!(
+                "\n\n{}: {} verified, {} errors",
+                crate_name, verified, errors
+            ));
+            return Ok(CallToolResult::success(vec![Content::text(text)]));
+        }
+
+        // No summary found — likely a build error. Return last 50 lines.
+        let lines: Vec<&str> = combined.lines().collect();
+        let start = lines.len().saturating_sub(50);
+        let tail = lines[start..].join("\n");
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "No verification summary found (build error?)\n\n{}",
+            tail
+        ))]))
     }
 
     #[tool(description = "Rebuild the index from disk. Use after editing Verus source files. Only re-parses files that changed since the last index.")]
