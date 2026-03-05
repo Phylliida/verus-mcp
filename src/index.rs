@@ -4,6 +4,7 @@ use regex::RegexBuilder;
 use std::collections::{HashMap, HashSet};
 
 pub const MAX_RESULTS: usize = 50;
+pub const DEFAULT_RESULTS: usize = 4;
 
 /// Parse a potentially qualified name like `crate::vec2::ops::foo` into (module_prefix, name).
 /// Returns `None` for the module prefix when the name is unqualified.
@@ -759,26 +760,80 @@ impl Index {
     }
 
     /// Browse a module: returns all functions and types whose module_path matches
-    /// (exact or prefix match).
+    /// (exact or prefix match). Also supports crate-qualified paths like
+    /// "verus_topology" or "verus_topology::mesh".
     pub fn browse_module(&self, path: &str) -> (Vec<&FnEntry>, Vec<&TypeEntry>) {
         let p = path.to_lowercase();
+
+        // Check if path starts with a crate name (possibly after stripping "crate::")
+        let stripped = p.strip_prefix("crate::").unwrap_or(&p);
+        let (crate_filter, mod_filter) = self.parse_browse_path(stripped);
+
         let fns: Vec<&FnEntry> = self
             .entries
             .iter()
-            .filter(|e| {
-                let mp = e.module_path.to_lowercase();
-                mp == p || mp.starts_with(&format!("{}::", p))
-            })
+            .filter(|e| self.browse_matches(&e.crate_name, &e.module_path, &p, &crate_filter, &mod_filter))
             .collect();
         let types: Vec<&TypeEntry> = self
             .type_entries
             .iter()
-            .filter(|e| {
-                let mp = e.module_path.to_lowercase();
-                mp == p || mp.starts_with(&format!("{}::", p))
-            })
+            .filter(|e| self.browse_matches(&e.crate_name, &e.module_path, &p, &crate_filter, &mod_filter))
             .collect();
         (fns, types)
+    }
+
+    /// Parse a browse path into (crate_filter, module_filter).
+    /// If the path matches a known crate name, split it; otherwise return (None, full_path).
+    fn parse_browse_path(&self, path: &str) -> (Option<String>, Option<String>) {
+        // Collect known crate names
+        let crate_names: HashSet<String> = self.entries.iter()
+            .map(|e| normalize_crate(&e.crate_name))
+            .chain(self.type_entries.iter().map(|e| normalize_crate(&e.crate_name)))
+            .collect();
+
+        // Check if path is exactly a crate name
+        if crate_names.contains(&normalize_crate(path)) {
+            return (Some(normalize_crate(path)), None);
+        }
+
+        // Check if path starts with "crate_name::"
+        if let Some(pos) = path.find("::") {
+            let prefix = &path[..pos];
+            if crate_names.contains(&normalize_crate(prefix)) {
+                let remainder = &path[pos + 2..];
+                return (Some(normalize_crate(prefix)), Some(remainder.to_string()));
+            }
+        }
+
+        (None, None)
+    }
+
+    /// Check if an entry matches the browse query.
+    fn browse_matches(
+        &self,
+        entry_crate: &str,
+        entry_module: &str,
+        raw_path: &str,
+        crate_filter: &Option<String>,
+        mod_filter: &Option<String>,
+    ) -> bool {
+        // If we identified a crate filter, use it
+        if let Some(ref cf) = crate_filter {
+            if normalize_crate(entry_crate) != *cf {
+                return false;
+            }
+            return match mod_filter {
+                None => true, // browse entire crate
+                Some(mf) => {
+                    let mp = entry_module.to_lowercase();
+                    mp == *mf || mp.starts_with(&format!("{}::", mf))
+                }
+            };
+        }
+
+        // Fallback: original module_path matching
+        let mp = entry_module.to_lowercase();
+        mp == *raw_path || mp.starts_with(&format!("{}::", raw_path))
     }
 
     /// Find all functions that call a given function name.

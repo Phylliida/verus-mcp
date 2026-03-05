@@ -56,6 +56,7 @@ pub struct FnEntry {
     pub body: Option<String>,
     pub file_path: String,
     pub line: usize,
+    pub end_line: usize,
 }
 
 impl FnEntry {
@@ -199,8 +200,8 @@ impl FnEntry {
         };
 
         let mut out = format!(
-            "{prefix} {}{tparams}{}{ret}\n  module: {}\n  file:   {}:{}\n{trait_ctx}{doc}",
-            self.name, self.params, self.module_path, self.file_path, self.line,
+            "{prefix} {}{tparams}{}{ret}\n  module: {}\n  file:   {}:{}-{}\n{trait_ctx}{doc}",
+            self.name, self.params, self.module_path, self.file_path, self.line, self.end_line,
         );
 
         if !self.requires.is_empty() {
@@ -260,6 +261,7 @@ pub struct TypeEntry {
     pub doc_comment: Option<String>,
     pub file_path: String,
     pub line: usize,
+    pub end_line: usize,
 }
 
 impl TypeEntry {
@@ -300,8 +302,8 @@ impl TypeEntry {
         };
 
         let mut out = format!(
-            "{} {}{}\n  module: {}\n  file:   {}:{}\n{}",
-            prefix, self.name, tparams, self.module_path, self.file_path, self.line, doc
+            "{} {}{}\n  module: {}\n  file:   {}:{}-{}\n{}",
+            prefix, self.name, tparams, self.module_path, self.file_path, self.line, self.end_line, doc
         );
 
         if let Some(ref aliased) = self.aliased_type {
@@ -337,6 +339,7 @@ pub struct TraitEntry {
     pub doc_comment: Option<String>,
     pub file_path: String,
     pub line: usize,
+    pub end_line: usize,
 }
 
 impl TraitEntry {
@@ -385,8 +388,8 @@ impl TraitEntry {
         };
 
         let mut out = format!(
-            "{} {}{}{}\n  module:  {}\n  file:    {}:{}\n{}",
-            prefix, self.name, tparams, supers, self.module_path, self.file_path, self.line, doc
+            "{} {}{}{}\n  module:  {}\n  file:    {}:{}-{}\n{}",
+            prefix, self.name, tparams, supers, self.module_path, self.file_path, self.line, self.end_line, doc
         );
 
         if !self.method_names.is_empty() {
@@ -408,6 +411,7 @@ pub struct ImplEntry {
     pub module_path: String,
     pub file_path: String,
     pub line: usize,
+    pub end_line: usize,
 }
 
 impl ImplEntry {
@@ -449,8 +453,8 @@ impl ImplEntry {
         };
 
         let mut out = format!(
-            "{}\n  module:  {}\n  file:    {}:{}\n",
-            header, self.module_path, self.file_path, self.line
+            "{}\n  module:  {}\n  file:    {}:{}-{}\n",
+            header, self.module_path, self.file_path, self.line, self.end_line
         );
 
         if !self.method_names.is_empty() {

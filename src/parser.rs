@@ -148,6 +148,7 @@ fn collect_items_from_impl(
     }
 
     let line = impl_node.start_position().row + 1;
+    let end_line = impl_node.end_position().row + 1;
     items.impls.push(ImplEntry {
         trait_name,
         type_name,
@@ -157,6 +158,7 @@ fn collect_items_from_impl(
         module_path: module_path.to_string(),
         file_path: file_path.to_string(),
         line,
+        end_line,
     });
 }
 
@@ -179,6 +181,7 @@ fn collect_items_from_trait(
         .map(|n| node_text(&n, source));
     let doc_comment = extract_doc_comment(trait_node, source);
     let line = trait_node.start_position().row + 1;
+    let end_line = trait_node.end_position().row + 1;
 
     // Extract supertraits from bounds (e.g., `trait Foo: Bar + Baz`)
     let supertraits = trait_node
@@ -226,6 +229,7 @@ fn collect_items_from_trait(
             doc_comment,
             file_path: file_path.to_string(),
             line,
+            end_line,
         });
     }
 }
@@ -244,6 +248,7 @@ fn extract_function_item(
     let visibility = extract_visibility(node, source);
     let (kind, is_open) = extract_fn_kind(node, source);
     let line = node.start_position().row + 1;
+    let end_line = node.end_position().row + 1;
     let doc_comment = extract_doc_comment(node, source);
 
     // Type parameters
@@ -288,6 +293,7 @@ fn extract_function_item(
         body,
         file_path: file_path.to_string(),
         line,
+        end_line,
     })
 }
 
@@ -302,6 +308,7 @@ fn extract_struct_item(
     let name_text = node_text(&name, source);
     let visibility = extract_visibility(node, source);
     let line = node.start_position().row + 1;
+    let end_line = node.end_position().row + 1;
     let doc_comment = extract_doc_comment(node, source);
 
     let type_params = node
@@ -331,6 +338,7 @@ fn extract_struct_item(
         doc_comment,
         file_path: file_path.to_string(),
         line,
+        end_line,
     })
 }
 
@@ -345,6 +353,7 @@ fn extract_enum_item(
     let name_text = node_text(&name, source);
     let visibility = extract_visibility(node, source);
     let line = node.start_position().row + 1;
+    let end_line = node.end_position().row + 1;
     let doc_comment = extract_doc_comment(node, source);
 
     let type_params = node
@@ -379,6 +388,7 @@ fn extract_enum_item(
         doc_comment,
         file_path: file_path.to_string(),
         line,
+        end_line,
     })
 }
 
@@ -393,6 +403,7 @@ fn extract_type_alias(
     let name_text = node_text(&name, source);
     let visibility = extract_visibility(node, source);
     let line = node.start_position().row + 1;
+    let end_line = node.end_position().row + 1;
     let doc_comment = extract_doc_comment(node, source);
 
     let type_params = node
@@ -416,6 +427,7 @@ fn extract_type_alias(
         doc_comment,
         file_path: file_path.to_string(),
         line,
+        end_line,
     })
 }
 

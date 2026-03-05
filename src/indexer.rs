@@ -8,16 +8,25 @@ use walkdir::WalkDir;
 /// Per-file cache: maps absolute path → (mtime, parsed items).
 pub type FileCache = HashMap<PathBuf, (SystemTime, ParsedItems)>;
 
-/// Default crate source roots relative to the binary's working directory.
-const DEFAULT_ROOTS: &[(&str, &str)] = &[
-    ("verus-algebra", "verus-algebra/src"),
-    ("verus-linalg", "verus-linalg/src"),
-    ("verus-geometry", "verus-geometry/src"),
-    ("verus-bigint", "verus-bigint/src"),
-    ("verus-rational", "verus-rational/src"),
-    ("verus-interval-arithmetic", "verus-interval-arithmetic/src"),
-    ("verus-topology", "verus-topology/src"),
-];
+/// Auto-discover verus-* crate roots under the workspace directory.
+fn discover_verus_roots(workspace: &Path) -> Vec<(String, PathBuf)> {
+    let mut roots = Vec::new();
+    let entries = match std::fs::read_dir(workspace) {
+        Ok(e) => e,
+        Err(_) => return roots,
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("verus-") && entry.path().is_dir() {
+            let src = entry.path().join("src");
+            if src.is_dir() {
+                roots.push((name, src));
+            }
+        }
+    }
+    roots.sort_by(|a, b| a.0.cmp(&b.0));
+    roots
+}
 
 /// Discover all .rs files under a directory.
 fn collect_rs_files(dir: &Path) -> Vec<PathBuf> {
@@ -86,12 +95,8 @@ fn find_workspace_root() -> PathBuf {
 /// Return the resolved source root directories for watching.
 pub fn resolve_roots() -> Vec<PathBuf> {
     let workspace = find_workspace_root();
-    let roots: Vec<(String, PathBuf)> = roots_from_env().unwrap_or_else(|| {
-        DEFAULT_ROOTS
-            .iter()
-            .map(|(name, rel)| (name.to_string(), workspace.join(rel)))
-            .collect()
-    });
+    let roots: Vec<(String, PathBuf)> = roots_from_env()
+        .unwrap_or_else(|| discover_verus_roots(&workspace));
     roots.into_iter().map(|(_, p)| p).filter(|p| p.is_dir()).collect()
 }
 
@@ -103,12 +108,8 @@ pub fn build_index() -> (Vec<FnEntry>, Vec<TypeEntry>, Vec<TraitEntry>, Vec<Impl
 /// Incrementally rebuild the index, reusing cached entries for unchanged files.
 pub fn build_index_incremental(old_cache: &FileCache) -> (Vec<FnEntry>, Vec<TypeEntry>, Vec<TraitEntry>, Vec<ImplEntry>, FileCache) {
     let workspace = find_workspace_root();
-    let roots: Vec<(String, PathBuf)> = roots_from_env().unwrap_or_else(|| {
-        DEFAULT_ROOTS
-            .iter()
-            .map(|(name, rel)| (name.to_string(), workspace.join(rel)))
-            .collect()
-    });
+    let roots: Vec<(String, PathBuf)> = roots_from_env()
+        .unwrap_or_else(|| discover_verus_roots(&workspace));
 
     let mut all_fns = Vec::new();
     let mut all_types = Vec::new();

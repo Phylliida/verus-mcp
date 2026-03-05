@@ -1,4 +1,4 @@
-use crate::index::{Index, Matcher, MAX_RESULTS};
+use crate::index::{Index, Matcher, DEFAULT_RESULTS, MAX_RESULTS};
 use crate::indexer;
 use crate::types::FnKind;
 use rmcp::{
@@ -94,7 +94,7 @@ pub struct DependencyParams {
 
 /// Format "Did you mean:" suggestions, or empty string if none found.
 fn format_did_you_mean(idx: &Index, query: &str) -> String {
-    let suggestions = idx.suggest(query, 5);
+    let suggestions = idx.suggest(query, 10);
     if suggestions.is_empty() {
         return String::new();
     }
@@ -180,9 +180,9 @@ impl VerusMcpServer {
 
         // When substring results are few and no offset, append fuzzy matches
         if offset == 0 && result.total_count < 5 {
-            let remaining = limit.saturating_sub(result.items.len());
-            if remaining > 0 {
-                let fuzzy = idx.search_fuzzy(&params.query, remaining);
+            let fuzzy_limit = if result.items.is_empty() { 10 } else { DEFAULT_RESULTS.saturating_sub(result.items.len()) };
+            if fuzzy_limit > 0 {
+                let fuzzy = idx.search_fuzzy(&params.query, fuzzy_limit);
                 // Filter out items already in substring results
                 let existing: std::collections::HashSet<(&str, usize)> = result
                     .items
@@ -283,6 +283,52 @@ impl VerusMcpServer {
         let mut msg = format!("No function or type named '{}'", params.name);
         msg.push_str(&format_did_you_mean(&idx, &params.name));
         Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
+    #[tool(description = "Look up a Verus function by exact name and return its full source code (signature + body). Reads the actual source file using the indexed line range.")]
+    pub async fn lookup_source(
+        &self,
+        Parameters(params): Parameters<LookupParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let idx = self.index.read().map_err(|e| {
+            McpError::internal_error(format!("Lock error: {}", e), None)
+        })?;
+
+        let fn_results = idx.lookup(&params.name);
+
+        if fn_results.is_empty() {
+            let mut msg = format!("No function named '{}'", params.name);
+            msg.push_str(&format_did_you_mean(&idx, &params.name));
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
+
+        let mut sections = Vec::new();
+        for e in &fn_results {
+            // Read source lines from disk
+            match std::fs::read_to_string(&e.file_path) {
+                Ok(contents) => {
+                    let lines: Vec<&str> = contents.lines().collect();
+                    let start = e.line.saturating_sub(1); // 1-indexed to 0-indexed
+                    let end = e.end_line.min(lines.len());
+                    let source: String = lines[start..end]
+                        .join("\n");
+                    sections.push(format!(
+                        "// {}:{}-{}\n{}",
+                        e.file_path, e.line, e.end_line, source
+                    ));
+                }
+                Err(err) => {
+                    sections.push(format!(
+                        "// {}:{}-{} (could not read: {})",
+                        e.file_path, e.line, e.end_line, err
+                    ));
+                }
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            sections.join("\n---\n"),
+        )]))
     }
 
     #[tool(description = "Look up multiple Verus functions/types by exact name in one call. Returns full signatures with requires/ensures clauses. Max 10 names per call.")]
