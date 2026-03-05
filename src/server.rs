@@ -103,20 +103,18 @@ pub struct DependencyParams {
 }
 
 /// Convert a file path or module path to a Verus --verify-module argument.
+/// Verus uses crate-local module paths (e.g., "runtime::polygon", not "verus_geometry::runtime::polygon").
 /// Accepts: "src/runtime/polygon.rs", "runtime/polygon.rs", "runtime::polygon"
-/// Returns: "verus_geometry::runtime::polygon"
 fn to_verify_module(crate_name: &str, input: &str) -> String {
     let crate_mod = crate_name.replace('-', "_");
 
-    // If it already looks like a module path (has :: and no /), just ensure crate prefix
+    // If it already looks like a module path (has :: and no /), strip crate prefix if present
     if input.contains("::") && !input.contains('/') {
-        if input.starts_with(&crate_mod) {
-            return input.to_string();
-        }
-        if input.starts_with("crate::") {
-            return format!("{}{}", crate_mod, &input["crate".len()..]);
-        }
-        return format!("{}::{}", crate_mod, input);
+        let stripped = input
+            .strip_prefix(&format!("{}::", crate_mod))
+            .or_else(|| input.strip_prefix("crate::"))
+            .unwrap_or(input);
+        return stripped.to_string();
     }
 
     // File path: strip src/ prefix and .rs suffix, convert / to ::
@@ -129,7 +127,7 @@ fn to_verify_module(crate_name: &str, input: &str) -> String {
     if module.is_empty() || module == "lib" || module == "main" {
         crate_mod
     } else {
-        format!("{}::{}", crate_mod, module)
+        module
     }
 }
 
