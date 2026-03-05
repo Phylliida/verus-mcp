@@ -900,10 +900,8 @@ impl VerusMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let workspace = indexer::find_workspace_root();
         let crate_dir = workspace.join(&params.crate_name);
-        let script = crate_dir.join("scripts/check.sh");
 
         if !crate_dir.join("src").is_dir() {
-            // List available crates
             let mut available = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&workspace) {
                 for entry in entries.filter_map(|e| e.ok()) {
@@ -921,14 +919,13 @@ impl VerusMcpServer {
             ))]));
         }
 
-        use tokio::process::Command;
-
-        // Single-module verification: run cargo verus directly with --verify-module
-        if let Some(ref module_input) = params.module {
-            let verify_module = to_verify_module(&params.crate_name, module_input);
-            let default_verus_root = workspace.join("verus");
-            let script = format!(
-                r#"set -euo pipefail
+        let default_verus_root = workspace.join("verus");
+        let module_flag = match params.module {
+            Some(ref m) => format!("--verify-module {} ", to_verify_module(&params.crate_name, m)),
+            None => String::new(),
+        };
+        let script = format!(
+            r#"set -euo pipefail
 VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
 VERUS_SOURCE="$VERUS_ROOT/source"
 case "$(uname -s)-$(uname -m)" in
@@ -939,60 +936,19 @@ esac
 export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
 export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
 export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
-cargo verus verify --manifest-path Cargo.toml -p {pkg} -- --verify-module {module} --triggers-mode silent
+cargo verus verify --manifest-path Cargo.toml -p {pkg} -- {module_flag}--triggers-mode silent
 "#,
-                default_verus_root = default_verus_root.display(),
-                pkg = params.crate_name,
-                module = verify_module,
-            );
+            default_verus_root = default_verus_root.display(),
+            pkg = params.crate_name,
+            module_flag = module_flag,
+        );
 
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(600),
-                Command::new("bash")
-                    .arg("-c")
-                    .arg(&script)
-                    .current_dir(&crate_dir)
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .output(),
-            )
-            .await;
-
-            let output = match result {
-                Ok(Ok(output)) => output,
-                Ok(Err(e)) => {
-                    return Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Failed to run cargo verus: {}", e
-                    ))]));
-                }
-                Err(_) => {
-                    return Ok(CallToolResult::success(vec![Content::text(
-                        "cargo verus timed out after 10 minutes",
-                    )]));
-                }
-            };
-
-            let combined = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-            );
-
-            return self.parse_verus_output(&params.crate_name, &combined);
-        }
-
-        // Full crate verification via check.sh
-        if !script.exists() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "No check.sh found for '{}' (try passing module for direct cargo verus)",
-                params.crate_name,
-            ))]));
-        }
-
+        use tokio::process::Command;
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(600),
             Command::new("bash")
-                .arg("scripts/check.sh")
+                .arg("-c")
+                .arg(&script)
                 .current_dir(&crate_dir)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -1004,13 +960,12 @@ cargo verus verify --manifest-path Cargo.toml -p {pkg} -- --verify-module {modul
             Ok(Ok(output)) => output,
             Ok(Err(e)) => {
                 return Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Failed to run check.sh: {}",
-                    e
+                    "Failed to run cargo verus: {}", e
                 ))]));
             }
             Err(_) => {
                 return Ok(CallToolResult::success(vec![Content::text(
-                    "check.sh timed out after 10 minutes",
+                    "cargo verus timed out after 10 minutes",
                 )]));
             }
         };
