@@ -158,6 +158,18 @@ fn paginate<T>(items: Vec<T>, offset: usize, limit: usize) -> Vec<T> {
 }
 
 impl Index {
+    pub fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+            type_entries: Vec::new(),
+            trait_entries: Vec::new(),
+            impl_entries: Vec::new(),
+            callers: HashMap::new(),
+            callees: Vec::new(),
+            file_cache: FileCache::new(),
+        }
+    }
+
     pub fn new(
         entries: Vec<FnEntry>,
         type_entries: Vec<TypeEntry>,

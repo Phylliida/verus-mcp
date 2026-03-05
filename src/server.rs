@@ -9,6 +9,7 @@ use rmcp::{
 use rmcp::schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::{Arc, RwLock};
+use tokio::sync::watch;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchParams {
@@ -136,16 +137,25 @@ fn format_count(shown: usize, total: usize, offset: usize) -> String {
 #[derive(Clone)]
 pub struct VerusMcpServer {
     index: Arc<RwLock<Index>>,
+    ready: watch::Receiver<bool>,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl VerusMcpServer {
-    pub fn new(index: Arc<RwLock<Index>>) -> Self {
+    pub fn new(index: Arc<RwLock<Index>>, ready: watch::Receiver<bool>) -> Self {
         Self {
             index,
+            ready,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Wait for the initial index build to complete (no-op once ready).
+    async fn wait_ready(&self) {
+        let mut rx = self.ready.clone();
+        // wait_for returns immediately if the value already satisfies the predicate
+        let _ = rx.wait_for(|&v| v).await;
     }
 
     #[tool(description = "Search Verus proof/spec/exec functions by name substring. Returns matching function signatures with module paths and file locations.")]
@@ -153,6 +163,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -253,6 +264,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<LookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -290,6 +302,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<LookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -336,6 +349,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<BatchLookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         if params.names.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No names provided",
@@ -386,6 +400,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -422,6 +437,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -458,6 +474,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -494,6 +511,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -551,6 +569,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -584,6 +603,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<LookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -620,6 +640,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<LookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -650,6 +671,7 @@ impl VerusMcpServer {
 
     #[tool(description = "List all indexed modules with their item counts.")]
     pub async fn list_modules(&self) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -687,6 +709,7 @@ impl VerusMcpServer {
 
     #[tool(description = "Show index statistics: function counts by kind (spec/proof/exec), by crate, type/trait counts, and assume(false) proof debt.")]
     pub async fn stats(&self) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -725,6 +748,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<SignatureSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         if params.param_type.is_none() && params.return_type.is_none() && params.type_bound.is_none() {
             return Ok(CallToolResult::success(vec![Content::text(
                 "At least one of param_type, return_type, or type_bound must be provided.",
@@ -781,6 +805,7 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<DependencyParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
         })?;
@@ -832,6 +857,7 @@ impl VerusMcpServer {
 
     #[tool(description = "Rebuild the index from disk. Use after editing Verus source files. Only re-parses files that changed since the last index.")]
     pub async fn reindex(&self) -> Result<CallToolResult, McpError> {
+        self.wait_ready().await;
         let old_cache = {
             let idx = self.index.read().map_err(|e| {
                 McpError::internal_error(format!("Lock error: {}", e), None)
