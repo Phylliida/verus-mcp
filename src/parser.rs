@@ -42,6 +42,13 @@ fn collect_items_from_node(
     trait_name: Option<&str>,
     items: &mut ParsedItems,
 ) {
+    // If this node itself is an ERROR, extract orphaned function signatures from it.
+    // This handles the case where the root or a top-level node is ERROR (e.g. when
+    // verus! {} causes the entire file to parse as one big ERROR node).
+    if node.kind() == "ERROR" {
+        extract_orphaned_functions(node, source, file_path, crate_name, module_path, items);
+    }
+
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
@@ -94,6 +101,23 @@ fn collect_items_from_node(
                     &child, source, file_path, crate_name, module_path,
                 ) {
                     items.types.push(entry);
+                }
+            }
+            // Recurse into ERROR, block, and expression_statement nodes.
+            // verus! { ... } creates ERROR + block during error recovery;
+            // function_items inside need to be found recursively.
+            "ERROR" | "block" | "expression_statement" => {
+                collect_items_from_node(
+                    &child, source, file_path, crate_name, module_path, trait_name, items,
+                );
+                // Also extract orphaned function signatures from ERROR nodes.
+                // When tree-sitter fails to form a function_item (e.g. for very long
+                // functions inside verus! blocks), the signature components appear as
+                // siblings: visibility_modifier, function_modifiers, identifier, etc.
+                if child.kind() == "ERROR" {
+                    extract_orphaned_functions(
+                        &child, source, file_path, crate_name, module_path, items,
+                    );
                 }
             }
             _ => {}
@@ -295,6 +319,259 @@ fn extract_function_item(
         line,
         end_line,
     })
+}
+
+/// Extract function entries from orphaned signature components inside ERROR nodes.
+/// When tree-sitter can't form a `function_item` (e.g. for very long functions inside
+/// `verus!` blocks), the components (visibility_modifier, function_modifiers, identifier,
+/// type_parameters, parameters, ensures_clause, decreases_clause) appear as siblings
+/// in the ERROR node rather than children of a function_item.
+fn extract_orphaned_functions(
+    error_node: &tree_sitter::Node,
+    source: &str,
+    file_path: &str,
+    crate_name: &str,
+    module_path: &str,
+    items: &mut ParsedItems,
+) {
+    let child_count = error_node.child_count();
+    // Collect names of already-found function_items to avoid duplicates
+    let existing: std::collections::HashSet<String> = items
+        .functions
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
+
+    let mut i = 0;
+    while i < child_count {
+        let child = match error_node.child(i) {
+            Some(c) => c,
+            None => { i += 1; continue; }
+        };
+
+        if child.kind() != "function_modifiers" {
+            i += 1;
+            continue;
+        }
+
+        // Found function_modifiers — try to extract an orphaned function signature.
+        let mods_node = child;
+        let mods_idx = i;
+
+        // Extract kind from function_modifiers
+        let mut kind = FnKind::Exec;
+        let mut is_open = false;
+        {
+            let mut mc = mods_node.walk();
+            for modifier in mods_node.children(&mut mc) {
+                match node_text(&modifier, source).as_str() {
+                    "spec" => kind = FnKind::Spec,
+                    "proof" => kind = FnKind::Proof,
+                    "exec" => kind = FnKind::Exec,
+                    "open" => is_open = true,
+                    _ => {}
+                }
+            }
+        }
+
+        // Check for visibility_modifier immediately before
+        let visibility = if mods_idx > 0 {
+            match error_node.child(mods_idx - 1) {
+                Some(prev) if prev.kind() == "visibility_modifier" => {
+                    let text = node_text(&prev, source);
+                    if text.contains("crate") {
+                        Visibility::PublicCrate
+                    } else {
+                        Visibility::Public
+                    }
+                }
+                _ => Visibility::Private,
+            }
+        } else {
+            Visibility::Private
+        };
+
+        // Scan forward for identifier (function name), skipping anonymous nodes like 'fn'
+        let mut j = mods_idx + 1;
+        let mut name_text: Option<String> = None;
+        while j < child_count {
+            if let Some(n) = error_node.child(j) {
+                if n.kind() == "identifier" {
+                    name_text = Some(node_text(&n, source));
+                    j += 1;
+                    break;
+                }
+                // Stop if we hit structural markers of another function
+                if n.kind() == "function_modifiers" || n.kind() == "function_item" {
+                    break;
+                }
+                // Skip anonymous nodes (like 'fn' keyword)
+                if !n.is_named() || n.kind() == "visibility_modifier" {
+                    j += 1;
+                    continue;
+                }
+                // If it's a named node that isn't identifier, stop
+                break;
+            } else {
+                break;
+            }
+        }
+
+        let name_text = match name_text {
+            Some(n) => n,
+            None => { i = j.max(mods_idx + 1); continue; }
+        };
+
+        // Skip if already found via normal function_item extraction
+        if existing.contains(name_text.as_str()) {
+            i = j;
+            continue;
+        }
+
+        // Collect optional components following the name
+        let mut type_params = None;
+        let mut params = "()".to_string();
+        let mut return_type = None;
+        let mut requires = Vec::new();
+        let mut ensures = Vec::new();
+        let mut body_text = None;
+        let start_line = if mods_idx > 0 {
+            error_node.child(mods_idx - 1)
+                .filter(|n| n.kind() == "visibility_modifier")
+                .map(|n| n.start_position().row + 1)
+                .unwrap_or_else(|| mods_node.start_position().row + 1)
+        } else {
+            mods_node.start_position().row + 1
+        };
+        let mut end_line = mods_node.end_position().row + 1;
+
+        // Scan forward collecting signature components and body
+        while j < child_count {
+            let n = match error_node.child(j) {
+                Some(n) => n,
+                None => break,
+            };
+            match n.kind() {
+                "type_parameters" => {
+                    type_params = Some(node_text(&n, source));
+                    end_line = n.end_position().row + 1;
+                }
+                "parameters" => {
+                    params = node_text(&n, source);
+                    end_line = n.end_position().row + 1;
+                }
+                "return_type" | "type_identifier" if return_type.is_none() && n.start_position().row == mods_node.start_position().row => {
+                    // Return type on the same line as the signature
+                    return_type = Some(node_text(&n, source));
+                    end_line = n.end_position().row + 1;
+                }
+                "requires_clause" => {
+                    requires = extract_clause_from_sibling(&n, source);
+                    end_line = n.end_position().row + 1;
+                }
+                "ensures_clause" => {
+                    ensures = extract_clause_from_sibling(&n, source);
+                    end_line = n.end_position().row + 1;
+                }
+                "decreases_clause" => {
+                    end_line = n.end_position().row + 1;
+                }
+                // Body content: update end_line but don't collect body text
+                // (the body isn't a clean block for orphaned functions)
+                "let_declaration" | "expression_statement" | "block" => {
+                    end_line = n.end_position().row + 1;
+                    // If it's a block that might be the whole function body
+                    if n.kind() == "block" && body_text.is_none() {
+                        body_text = Some(node_text(&n, source));
+                    }
+                }
+                // Stop at the next function signature
+                "visibility_modifier" | "function_modifiers" | "function_item" => break,
+                "line_comment" => {
+                    // Comments between functions — keep extending end_line
+                    // but don't break, the body might continue
+                    end_line = n.end_position().row + 1;
+                }
+                _ => {
+                    // Other body nodes — extend end_line
+                    end_line = n.end_position().row + 1;
+                }
+            }
+            j += 1;
+        }
+
+        // Extract doc comment from source text above start_line
+        let doc_comment = {
+            let start_byte = mods_node.start_byte();
+            let before = &source[..start_byte];
+            let lines: Vec<&str> = before.lines().collect();
+            let mut comments = Vec::new();
+            let mut k = lines.len();
+            while k > 0 {
+                k -= 1;
+                let line = lines[k].trim();
+                if line.starts_with("///") {
+                    let doc_text = line.trim_start_matches("///").trim();
+                    comments.push(doc_text.to_string());
+                } else if line.is_empty() || line.starts_with("#[") {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+            if comments.is_empty() {
+                None
+            } else {
+                comments.reverse();
+                Some(comments.join(" "))
+            }
+        };
+
+        items.functions.push(FnEntry {
+            name: name_text,
+            kind,
+            visibility,
+            is_open,
+            type_params,
+            params,
+            return_type,
+            requires,
+            ensures,
+            crate_name: crate_name.to_string(),
+            module_path: module_path.to_string(),
+            trait_name: None,
+            doc_comment,
+            body: body_text,
+            file_path: file_path.to_string(),
+            line: start_line,
+            end_line,
+        });
+
+        i = j;
+        continue;
+    }
+}
+
+/// Extract clause items directly from a clause node (requires_clause or ensures_clause).
+/// Unlike `extract_clause` which searches children of a parent node for the clause,
+/// this takes the clause node itself.
+fn extract_clause_from_sibling(clause_node: &tree_sitter::Node, source: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let mut cursor = clause_node.walk();
+    for expr in clause_node.children(&mut cursor) {
+        let kind = expr.kind();
+        if kind == "requires" || kind == "ensures" || kind == "," {
+            continue;
+        }
+        if !expr.is_named() {
+            continue;
+        }
+        let text = node_text(&expr, source).trim().to_string();
+        if !text.is_empty() {
+            results.push(text);
+        }
+    }
+    results
 }
 
 fn extract_struct_item(
@@ -555,4 +832,23 @@ fn node_text(node: &tree_sitter::Node, source: &str) -> String {
     node.utf8_text(source.as_bytes())
         .unwrap_or("")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_orphaned_function_extraction() {
+        let source = std::fs::read_to_string(
+            "/Users/yams/Prog/verus-cad/verus-algebra/src/binomial/mod.rs"
+        ).unwrap();
+
+        let items = extract_items(&source, "test.rs", "verus_algebra", "binomial").unwrap();
+        let found = items.functions.iter().find(|f| f.name == "lemma_binomial_theorem");
+        assert!(found.is_some(), "lemma_binomial_theorem should be found");
+        let f = found.unwrap();
+        assert_eq!(f.kind, FnKind::Proof);
+        assert!(!f.ensures.is_empty(), "should have ensures clause");
+    }
 }
