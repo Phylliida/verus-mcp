@@ -477,13 +477,18 @@ impl VerusMcpServer {
     }
 
     /// Capture item names into the active context (no-op if no context active).
+    /// Duplicates are moved to the end (most recently fetched last).
     fn capture_names(&self, names: impl IntoIterator<Item = impl AsRef<str>>) {
         let mut ctx = self.context.lock().unwrap();
         if ctx.active.is_none() { return; }
         let mut changed = false;
         for name in names {
             let name = name.as_ref();
-            if !ctx.items.iter().any(|n| n == name) {
+            if let Some(pos) = ctx.items.iter().position(|n| n == name) {
+                ctx.items.remove(pos);
+                ctx.items.push(name.to_string());
+                changed = true;
+            } else {
                 ctx.items.push(name.to_string());
                 changed = true;
             }
@@ -623,6 +628,11 @@ impl VerusMcpServer {
             offset,
             limit,
         );
+
+        // Auto-capture to context when 1-2 results
+        if result.total_count >= 1 && result.total_count <= 2 {
+            self.capture_names(result.items.iter().map(|e| &e.name));
+        }
 
         let mut text: String = result
             .items
@@ -870,6 +880,11 @@ impl VerusMcpServer {
         let offset = params.offset.unwrap_or(0);
         let kind = params.kind.as_deref().and_then(parse_kind);
         let result = idx.search_ensures(&params.query, params.crate_name.as_deref(), params.module.as_deref(), params.name.as_deref(), kind, offset, limit);
+
+        // Auto-capture to context when 1-2 results
+        if result.total_count >= 1 && result.total_count <= 2 {
+            self.capture_names(result.items.iter().map(|e| &e.name));
+        }
 
         if result.items.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(format!(
