@@ -7,8 +7,8 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 use rmcp::schemars::JsonSchema;
-use serde::Deserialize;
-use std::sync::{Arc, RwLock};
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::watch;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -110,6 +110,147 @@ pub struct DependencyParams {
     pub name: String,
     /// Direction: "callers" (who calls this function) or "callees" (what this function calls). Default: "callers"
     pub direction: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ContextActivateParams {
+    /// Context name to activate or create. Omit to list recent contexts.
+    pub name: Option<String>,
+    /// Whether to replay captured signatures on resume (default: true). Set false to just activate without replay.
+    #[serde(default = "default_true")]
+    pub replay: bool,
+}
+
+fn default_true() -> bool { true }
+
+struct ContextState {
+    active: Option<String>,
+    items: Vec<String>,
+    listed: bool,
+}
+
+impl ContextState {
+    fn new() -> Self {
+        ContextState {
+            active: None,
+            items: Vec::new(),
+            listed: false,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct ContextFile {
+    name: String,
+    created: u64,
+    last_used: u64,
+    items: Vec<String>,
+}
+
+fn contexts_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home)
+        .join(".verus-mcp")
+        .join("contexts")
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn format_relative_time(timestamp: u64) -> String {
+    let now = now_unix();
+    let diff = now.saturating_sub(timestamp);
+    if diff < 60 { return "just now".to_string(); }
+    if diff < 3600 { return format!("{}m ago", diff / 60); }
+    if diff < 86400 { return format!("{}h ago", diff / 3600); }
+    if diff < 604800 { return format!("{}d ago", diff / 86400); }
+    format!("{}w ago", diff / 604800)
+}
+
+fn load_context(name: &str) -> Option<ContextFile> {
+    let path = contexts_dir().join(format!("{}.json", name));
+    let data = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+fn save_context(name: &str, items: &[String]) {
+    let dir = contexts_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("{}.json", name));
+
+    let existing = load_context(name);
+    let created = existing.map(|c| c.created).unwrap_or_else(now_unix);
+
+    let cf = ContextFile {
+        name: name.to_string(),
+        created,
+        last_used: now_unix(),
+        items: items.to_vec(),
+    };
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(&cf).unwrap_or_default());
+}
+
+fn list_contexts() -> Vec<ContextFile> {
+    let dir = contexts_dir();
+    let mut contexts = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                if let Ok(data) = std::fs::read_to_string(&path) {
+                    if let Ok(cf) = serde_json::from_str::<ContextFile>(&data) {
+                        contexts.push(cf);
+                    }
+                }
+            }
+        }
+    }
+    contexts.sort_by(|a, b| b.last_used.cmp(&a.last_used));
+    contexts.truncate(25);
+    contexts
+}
+
+fn replay_items(idx: &Index, items: &[String]) -> String {
+    let mut fn_parts = Vec::new();
+    let mut type_parts = Vec::new();
+    let mut not_found = Vec::new();
+
+    for name in items {
+        let fn_results = idx.lookup(name);
+        if !fn_results.is_empty() {
+            for e in &fn_results {
+                fn_parts.push(e.format_full());
+            }
+            continue;
+        }
+        let type_results = idx.lookup_type(name);
+        if !type_results.is_empty() {
+            for e in &type_results {
+                type_parts.push(e.format_full());
+            }
+            continue;
+        }
+        not_found.push(name.as_str());
+    }
+
+    let mut text = String::new();
+    if !fn_parts.is_empty() {
+        text.push_str(&fn_parts.join("\n"));
+    }
+    if !type_parts.is_empty() {
+        if !text.is_empty() { text.push('\n'); }
+        text.push_str(&type_parts.join("\n"));
+    }
+    if !not_found.is_empty() {
+        if !text.is_empty() { text.push_str("\n\n"); }
+        text.push_str("---\nNot found (may have been renamed): ");
+        text.push_str(&not_found.join(", "));
+    }
+    text
 }
 
 /// Convert a file path or module path to a Verus --verify-module argument.
@@ -298,6 +439,7 @@ fn format_count(shown: usize, total: usize, offset: usize) -> String {
 pub struct VerusMcpServer {
     index: Arc<RwLock<Index>>,
     ready: watch::Receiver<bool>,
+    context: Arc<Mutex<ContextState>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -307,6 +449,7 @@ impl VerusMcpServer {
         Self {
             index,
             ready,
+            context: Arc::new(Mutex::new(ContextState::new())),
             tool_router: Self::tool_router(),
         }
     }
@@ -318,11 +461,163 @@ impl VerusMcpServer {
         let _ = rx.wait_for(|&v| v).await;
     }
 
+    /// Check if a context is active. Returns a gate message if not.
+    fn require_context(&self) -> Option<String> {
+        let ctx = self.context.lock().unwrap();
+        if ctx.active.is_some() { return None; }
+
+        let recent = list_contexts();
+        let mut msg = String::from("No context active. Activate or create one first.");
+        if !recent.is_empty() {
+            msg.push_str("\n\nRecent contexts:");
+            for c in &recent {
+                msg.push_str(&format!(
+                    "\n  {} ({} items, {})",
+                    c.name, c.items.len(), format_relative_time(c.last_used)
+                ));
+            }
+        }
+        msg.push_str("\n\nUse context_list to see contexts, then context_activate(name) to resume or create one.");
+        Some(msg)
+    }
+
+    /// Capture item names into the active context (no-op if no context active).
+    fn capture_names(&self, names: impl IntoIterator<Item = impl AsRef<str>>) {
+        let mut ctx = self.context.lock().unwrap();
+        if ctx.active.is_none() { return; }
+        let mut changed = false;
+        for name in names {
+            let name = name.as_ref();
+            if !ctx.items.iter().any(|n| n == name) {
+                ctx.items.push(name.to_string());
+                changed = true;
+            }
+        }
+        if changed {
+            if let Some(ref active_name) = ctx.active {
+                save_context(active_name, &ctx.items);
+            }
+        }
+    }
+
+    #[tool(description = "List recent contexts. Must be called before context_activate to see what contexts exist and avoid creating duplicates.")]
+    pub async fn context_list(
+        &self,
+    ) -> Result<CallToolResult, McpError> {
+        let recent = list_contexts();
+        let ctx_guard = self.context.lock().unwrap();
+        let active_info = match &ctx_guard.active {
+            Some(name) => format!("Active: {} ({} items)\n\n", name, ctx_guard.items.len()),
+            None => String::new(),
+        };
+        drop(ctx_guard);
+
+        // Mark as listed so context_activate is unblocked
+        self.context.lock().unwrap().listed = true;
+
+        if recent.is_empty() && active_info.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No contexts found. Use context_activate(name=\"my-context\") to create one."
+            )]));
+        }
+
+        let mut msg = active_info;
+        if !recent.is_empty() {
+            msg.push_str("Recent contexts:\n");
+            for c in &recent {
+                msg.push_str(&format!(
+                    "  {} ({} items, {})\n",
+                    c.name, c.items.len(), format_relative_time(c.last_used)
+                ));
+            }
+        }
+        msg.push_str("\nUse context_activate(name) to resume or create a context.");
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
+    #[tool(description = "Activate or create a context for tracking looked-up items across a session. You must call context_list first to see existing contexts. Call with a name to resume (replays all captured signatures) or create a new context.")]
+    pub async fn context_activate(
+        &self,
+        Parameters(params): Parameters<ContextActivateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Gate: must call context_list first
+        {
+            let ctx = self.context.lock().unwrap();
+            if !ctx.listed {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    "You must call context_list first to see existing contexts before activating or creating one."
+                )]));
+            }
+        }
+
+        let name = match params.name {
+            Some(n) => n,
+            None => {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    "context_activate requires a name. Call context_list first to see available contexts."
+                )]));
+            }
+        };
+
+        match load_context(&name) {
+            Some(cf) => {
+                // Resume: load items, set active
+                let items = cf.items;
+                let item_count = items.len();
+
+                let replay_text = if params.replay {
+                    self.wait_ready().await;
+                    let idx = self.index.read().map_err(|e| {
+                        McpError::internal_error(format!("Lock error: {}", e), None)
+                    })?;
+                    Some(replay_items(&idx, &items))
+                } else {
+                    None
+                };
+
+                {
+                    let mut ctx = self.context.lock().unwrap();
+                    ctx.active = Some(name.clone());
+                    ctx.items = items;
+                }
+                save_context(&name, &self.context.lock().unwrap().items);
+
+                let msg = match replay_text {
+                    Some(text) => format!(
+                        "Context \"{}\" activated ({} items)\n\n{}",
+                        name, item_count, text
+                    ),
+                    None => format!(
+                        "Context \"{}\" activated ({} items, replay skipped)",
+                        name, item_count
+                    ),
+                };
+                Ok(CallToolResult::success(vec![Content::text(msg)]))
+            }
+            None => {
+                // Create new context
+                {
+                    let mut ctx = self.context.lock().unwrap();
+                    ctx.active = Some(name.clone());
+                    ctx.items.clear();
+                }
+                save_context(&name, &[]);
+
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Context \"{}\" created and activated.", name
+                ))]))
+            }
+        }
+    }
+
     #[tool(description = "Search Verus proof/spec/exec functions by name substring. Returns matching function signatures with module paths and file locations.")]
     pub async fn search(
         &self,
         Parameters(params): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -424,6 +719,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<LookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -437,6 +735,7 @@ impl VerusMcpServer {
                 .map(|e| e.format_full())
                 .collect::<Vec<_>>()
                 .join("\n");
+            self.capture_names(std::iter::once(&params.name));
             return Ok(CallToolResult::success(vec![Content::text(text)]));
         }
 
@@ -449,6 +748,7 @@ impl VerusMcpServer {
                 .map(|e| e.format_full())
                 .collect::<Vec<_>>()
                 .join("\n");
+            self.capture_names(std::iter::once(&params.name));
             return Ok(CallToolResult::success(vec![Content::text(text)]));
         }
 
@@ -462,6 +762,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<LookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -474,6 +777,7 @@ impl VerusMcpServer {
             msg.push_str(&format_did_you_mean(&idx, &params.name));
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
+        self.capture_names(std::iter::once(&params.name));
 
         let mut sections = Vec::new();
         for e in &fn_results {
@@ -509,6 +813,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<BatchLookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         if params.names.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -526,9 +833,11 @@ impl VerusMcpServer {
         })?;
 
         let mut sections = Vec::new();
+        let mut found: Vec<&str> = Vec::new();
         for name in &params.names {
             let fn_results = idx.lookup(name);
             if !fn_results.is_empty() {
+                found.push(name.as_str());
                 let text: String = fn_results
                     .iter()
                     .map(|e| e.format_full())
@@ -539,6 +848,7 @@ impl VerusMcpServer {
             }
             let type_results = idx.lookup_type(name);
             if !type_results.is_empty() {
+                found.push(name.as_str());
                 let text: String = type_results
                     .iter()
                     .map(|e| e.format_full())
@@ -549,6 +859,7 @@ impl VerusMcpServer {
             }
             sections.push(format!("'{}': not found", name));
         }
+        self.capture_names(&found);
 
         Ok(CallToolResult::success(vec![Content::text(
             sections.join("\n---\n"),
@@ -560,6 +871,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -597,6 +911,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -634,6 +951,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -671,6 +991,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -729,6 +1052,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -763,6 +1089,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<LookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -800,6 +1129,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<LookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -831,6 +1163,9 @@ impl VerusMcpServer {
 
     #[tool(description = "List all indexed modules with their item counts.")]
     pub async fn list_modules(&self) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -869,6 +1204,9 @@ impl VerusMcpServer {
 
     #[tool(description = "Show index statistics: function counts by kind (spec/proof/exec), by crate, type/trait counts, and assume(false) proof debt.")]
     pub async fn stats(&self) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -908,6 +1246,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<SignatureSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         if params.param_type.is_none() && params.return_type.is_none() && params.type_bound.is_none() {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -965,6 +1306,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<DependencyParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let idx = self.index.read().map_err(|e| {
             McpError::internal_error(format!("Lock error: {}", e), None)
@@ -1020,6 +1364,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<CheckParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         let workspace = indexer::find_workspace_root();
         let crate_dir = workspace.join(&params.crate_name);
 
@@ -1170,6 +1517,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ProfileParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         let workspace = indexer::find_workspace_root();
         let crate_dir = workspace.join(&params.crate_name);
 
@@ -1330,6 +1680,9 @@ PYEOF
 
     #[tool(description = "Rebuild the index from disk. Use after editing Verus source files. Only re-parses files that changed since the last index.")]
     pub async fn reindex(&self) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         self.wait_ready().await;
         let old_cache = {
             let idx = self.index.read().map_err(|e| {
