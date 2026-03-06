@@ -116,12 +116,7 @@ pub struct DependencyParams {
 pub struct ContextActivateParams {
     /// Context name to activate or create. Omit to list recent contexts.
     pub name: Option<String>,
-    /// Whether to replay captured signatures on resume (default: true). Set false to just activate without replay.
-    #[serde(default = "default_true")]
-    pub replay: bool,
 }
-
-fn default_true() -> bool { true }
 
 struct ContextState {
     active: Option<String>,
@@ -535,7 +530,7 @@ impl VerusMcpServer {
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
-    #[tool(description = "Activate or create a context for tracking looked-up items across a session. You must call context_list first to see existing contexts. Call with a name to resume (replays all captured signatures) or create a new context.")]
+    #[tool(description = "Activate or create a context for tracking looked-up items across a session. You must call context_list first to see existing contexts. Call with a name to resume (replays all captured signatures) or create a new context. Always replays signatures on resume.")]
     pub async fn context_activate(
         &self,
         Parameters(params): Parameters<ContextActivateParams>,
@@ -565,14 +560,12 @@ impl VerusMcpServer {
                 let items = cf.items;
                 let item_count = items.len();
 
-                let replay_text = if params.replay {
-                    self.wait_ready().await;
+                self.wait_ready().await;
+                let replay_text = {
                     let idx = self.index.read().map_err(|e| {
                         McpError::internal_error(format!("Lock error: {}", e), None)
                     })?;
-                    Some(replay_items(&idx, &items))
-                } else {
-                    None
+                    replay_items(&idx, &items)
                 };
 
                 {
@@ -582,16 +575,10 @@ impl VerusMcpServer {
                 }
                 save_context(&name, &self.context.lock().unwrap().items);
 
-                let msg = match replay_text {
-                    Some(text) => format!(
-                        "Context \"{}\" activated ({} items)\n\n{}",
-                        name, item_count, text
-                    ),
-                    None => format!(
-                        "Context \"{}\" activated ({} items, replay skipped)",
-                        name, item_count
-                    ),
-                };
+                let msg = format!(
+                    "Context \"{}\" activated ({} items)\n\n{}",
+                    name, item_count, replay_text
+                );
                 Ok(CallToolResult::success(vec![Content::text(msg)]))
             }
             None => {
