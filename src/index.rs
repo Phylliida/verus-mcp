@@ -28,23 +28,35 @@ fn parse_qualified_name(input: &str) -> (Option<&str>, &str) {
     }
 }
 
+/// Strip generic parameters from a module path.
+/// e.g., "limits::Limits<T>" → "limits::Limits"
+fn strip_generics(path: &str) -> &str {
+    match path.find('<') {
+        Some(pos) => &path[..pos],
+        None => path,
+    }
+}
+
 /// Check if a module_path matches the given qualifier.
 /// The qualifier might be a suffix of the full module path (e.g., "vec2::ops" matches "vec2::ops")
 /// or it might include a crate name prefix that we should match against crate_name::module_path.
+/// Generic parameters are stripped before matching (e.g., qualifier "Limits" matches "limits::Limits<T>").
 fn module_matches(module_path: &str, crate_name: &str, qualifier: &str) -> bool {
+    let module_path_clean = strip_generics(module_path);
+    let qualifier_clean = strip_generics(qualifier);
     // Direct match
-    if module_path.eq_ignore_ascii_case(qualifier) {
+    if module_path_clean.eq_ignore_ascii_case(qualifier_clean) {
         return true;
     }
     // Qualifier might be crate_name::module_path
-    let full_path = format!("{}::{}", crate_name, module_path);
-    if full_path.eq_ignore_ascii_case(qualifier) {
+    let full_path = format!("{}::{}", crate_name, module_path_clean);
+    if full_path.eq_ignore_ascii_case(qualifier_clean) {
         return true;
     }
-    // Qualifier might be a suffix (e.g., "ops" matching "vec2::ops")
-    if module_path.ends_with(qualifier)
-        && (module_path.len() == qualifier.len()
-            || module_path.as_bytes()[module_path.len() - qualifier.len() - 1] == b':')
+    // Qualifier might be a suffix (e.g., "ops" matching "vec2::ops", or "Limits" matching "limits::Limits")
+    if module_path_clean.ends_with(qualifier_clean)
+        && (module_path_clean.len() == qualifier_clean.len()
+            || module_path_clean.as_bytes()[module_path_clean.len() - qualifier_clean.len() - 1] == b':')
     {
         return true;
     }

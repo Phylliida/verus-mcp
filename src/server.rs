@@ -95,6 +95,16 @@ pub struct CheckParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProfileParams {
+    /// Crate directory name (e.g., "verus-geometry", "verus-topology")
+    pub crate_name: String,
+    /// Optional: profile only this module. Accepts a file path or module path.
+    pub module: Option<String>,
+    /// Number of top functions to show (default: 25)
+    pub top_n: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DependencyParams {
     /// Function name to find dependencies for
     pub name: String,
@@ -129,6 +139,118 @@ fn to_verify_module(crate_name: &str, input: &str) -> String {
     } else {
         module
     }
+}
+
+/// Check if a "could not find module" error came from a dependency crate, not the target.
+/// This happens when `--verify-module` flags after `--` are passed to ALL crate compilations.
+fn is_dependency_module_error(output: &str, target_pkg: &str) -> bool {
+    let mut last_compiling_crate = None;
+    for line in output.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("Compiling ") {
+            if let Some(name) = rest.split_whitespace().next() {
+                last_compiling_crate = Some(name.to_string());
+            }
+        }
+        if line.contains("could not find module")
+            && (line.contains("--verify-module") || line.contains("--verify-only-module"))
+        {
+            if let Some(ref crate_name) = last_compiling_crate {
+                if crate_name != target_pkg {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Run a bash script with a 10-minute timeout. Returns the process output.
+async fn run_bash_script(
+    script: &str,
+    crate_dir: &std::path::Path,
+) -> Result<std::process::Output, String> {
+    use tokio::process::Command;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(600),
+        Command::new("bash")
+            .arg("-c")
+            .arg(script)
+            .current_dir(crate_dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output(),
+    )
+    .await;
+    match result {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(e)) => Err(format!("Failed to run cargo verus: {}", e)),
+        Err(_) => Err("cargo verus timed out after 10 minutes".to_string()),
+    }
+}
+
+/// Build the bash script for `cargo verus verify` (check mode).
+fn build_check_script(
+    default_verus_root: &std::path::Path,
+    pkg: &str,
+    module_flag: &str,
+) -> String {
+    format!(
+        r#"set -euo pipefail
+VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
+VERUS_SOURCE="$VERUS_ROOT/source"
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64)  TOOLCHAIN="1.93.0-aarch64-apple-darwin" ;;
+  Darwin-x86_64) TOOLCHAIN="1.93.0-x86_64-apple-darwin" ;;
+  *)             TOOLCHAIN="1.93.0-x86_64-unknown-linux-gnu" ;;
+esac
+export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
+export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
+export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
+cargo verus verify --manifest-path Cargo.toml -p {pkg} -- {module_flag}--triggers-mode silent
+"#,
+        default_verus_root = default_verus_root.display(),
+        pkg = pkg,
+        module_flag = module_flag,
+    )
+}
+
+/// Build the bash preamble for `cargo verus verify` (profile mode).
+/// Returns everything up to (and including) the `python3 ... <<'PYEOF'` line.
+fn build_profile_preamble(
+    default_verus_root: &std::path::Path,
+    pkg: &str,
+    module_flag: &str,
+    top_n: usize,
+) -> String {
+    format!(
+        r#"set -euo pipefail
+unset RUSTFLAGS
+unset CARGO_ENCODED_RUSTFLAGS
+VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
+VERUS_SOURCE="$VERUS_ROOT/source"
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64)  TOOLCHAIN="1.93.0-aarch64-apple-darwin" ;;
+  Darwin-x86_64) TOOLCHAIN="1.93.0-x86_64-apple-darwin" ;;
+  *)             TOOLCHAIN="1.93.0-x86_64-unknown-linux-gnu" ;;
+esac
+export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
+export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
+export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
+
+JSON_FILE="$(mktemp)"
+trap 'rm -f "$JSON_FILE"' EXIT
+
+cargo verus verify --manifest-path Cargo.toml -p {pkg} \
+  -- {module_flag}--output-json --time-expanded --triggers-mode silent > "$JSON_FILE" 2>&1 || true
+
+python3 - "$JSON_FILE" "{top_n}" <<'PYEOF'
+"#,
+        default_verus_root = default_verus_root.display(),
+        pkg = pkg,
+        module_flag = module_flag,
+        top_n = top_n,
+    )
 }
 
 /// Format "Did you mean:" suggestions, or empty string if none found.
@@ -924,59 +1046,38 @@ impl VerusMcpServer {
             Some(ref m) => format!("--verify-module {} ", to_verify_module(&params.crate_name, m)),
             None => String::new(),
         };
-        let script = format!(
-            r#"set -euo pipefail
-VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
-VERUS_SOURCE="$VERUS_ROOT/source"
-case "$(uname -s)-$(uname -m)" in
-  Darwin-arm64)  TOOLCHAIN="1.93.0-aarch64-apple-darwin" ;;
-  Darwin-x86_64) TOOLCHAIN="1.93.0-x86_64-apple-darwin" ;;
-  *)             TOOLCHAIN="1.93.0-x86_64-unknown-linux-gnu" ;;
-esac
-export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
-export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
-export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
-cargo verus verify --manifest-path Cargo.toml -p {pkg} -- {module_flag}--triggers-mode silent
-"#,
-            default_verus_root = default_verus_root.display(),
-            pkg = params.crate_name,
-            module_flag = module_flag,
-        );
-
-        use tokio::process::Command;
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(600),
-            Command::new("bash")
-                .arg("-c")
-                .arg(&script)
-                .current_dir(&crate_dir)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output(),
-        )
-        .await;
-
-        let output = match result {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => {
-                return Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Failed to run cargo verus: {}", e
-                ))]));
-            }
-            Err(_) => {
-                return Ok(CallToolResult::success(vec![Content::text(
-                    "cargo verus timed out after 10 minutes",
-                )]));
-            }
+        let script = build_check_script(&default_verus_root, &params.crate_name, &module_flag);
+        let output = match run_bash_script(&script, &crate_dir).await {
+            Ok(output) => output,
+            Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
         };
-
         let combined = format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
 
-        self.parse_verus_output(&params.crate_name, &combined)
+        // If --verify-module hit a dependency that doesn't have that module,
+        // fall back to full crate verification.
+        if !module_flag.is_empty() && is_dependency_module_error(&combined, &params.crate_name) {
+            let fallback = build_check_script(&default_verus_root, &params.crate_name, "");
+            let output = match run_bash_script(&fallback, &crate_dir).await {
+                Ok(output) => output,
+                Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
+            };
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return self.parse_verus_output(
+                &params.crate_name,
+                &combined,
+                Some("(--verify-module bypassed: dependency recompilation detected, full crate verified)"),
+            );
+        }
+
+        self.parse_verus_output(&params.crate_name, &combined, None)
     }
 
     /// Parse cargo verus output into a structured result.
@@ -984,7 +1085,9 @@ cargo verus verify --manifest-path Cargo.toml -p {pkg} -- {module_flag}--trigger
         &self,
         crate_name: &str,
         combined: &str,
+        note: Option<&str>,
     ) -> Result<CallToolResult, McpError> {
+        let note_prefix = note.map(|n| format!("{}\n\n", n)).unwrap_or_default();
         let summary_re =
             regex::Regex::new(r"verification results::\s*(\d+) verified,\s*(\d+) errors")
                 .unwrap();
@@ -995,8 +1098,8 @@ cargo verus verify --manifest-path Cargo.toml -p {pkg} -- {module_flag}--trigger
 
             if errors == 0 {
                 return Ok(CallToolResult::success(vec![Content::text(format!(
-                    "{}: {} verified, 0 errors",
-                    crate_name, verified
+                    "{}{}: {} verified, 0 errors",
+                    note_prefix, crate_name, verified
                 ))]));
             }
 
@@ -1044,7 +1147,7 @@ cargo verus verify --manifest-path Cargo.toml -p {pkg} -- {module_flag}--trigger
             let mut seen = std::collections::HashSet::new();
             error_blocks.retain(|b| seen.insert(b.clone()));
 
-            let mut text = error_blocks.join("\n\n");
+            let mut text = format!("{}{}", note_prefix, error_blocks.join("\n\n"));
             text.push_str(&format!(
                 "\n\n{}: {} verified, {} errors",
                 crate_name, verified, errors
@@ -1057,9 +1160,172 @@ cargo verus verify --manifest-path Cargo.toml -p {pkg} -- {module_flag}--trigger
         let start = lines.len().saturating_sub(50);
         let tail = lines[start..].join("\n");
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "No verification summary found (build error?)\n\n{}",
-            tail
+            "{}No verification summary found (build error?)\n\n{}",
+            note_prefix, tail
         ))]))
+    }
+
+    #[tool(description = "Profile Verus verification: per-function SMT time and rlimit breakdown. Returns sorted table of hottest functions and per-module summary. Timeout: 10 minutes.")]
+    pub async fn profile(
+        &self,
+        Parameters(params): Parameters<ProfileParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let workspace = indexer::find_workspace_root();
+        let crate_dir = workspace.join(&params.crate_name);
+
+        if !crate_dir.join("src").is_dir() {
+            let mut available = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&workspace) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("verus-") && entry.path().join("src").is_dir() {
+                        available.push(name);
+                    }
+                }
+            }
+            available.sort();
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Crate '{}' not found\n\nAvailable crates: {}",
+                params.crate_name,
+                available.join(", ")
+            ))]));
+        }
+
+        let default_verus_root = workspace.join("verus");
+        let module_flag = match params.module {
+            Some(ref m) => format!("--verify-module {} ", to_verify_module(&params.crate_name, m)),
+            None => String::new(),
+        };
+        let top_n = params.top_n.unwrap_or(25);
+
+        let bash_preamble = build_profile_preamble(
+            &default_verus_root,
+            &params.crate_name,
+            &module_flag,
+            top_n,
+        );
+
+        let python_part = r#"import json, sys
+
+json_path = sys.argv[1]
+top_n = int(sys.argv[2])
+
+with open(json_path) as f:
+    raw = f.read().strip()
+
+json_start = raw.find('{')
+if json_start < 0:
+    print(f"error: no JSON object found in output.\n{raw[:500]}", file=sys.stderr)
+    sys.exit(1)
+data, _ = json.JSONDecoder().raw_decode(raw, json_start)
+
+times = data.get("times-ms", {})
+smt = times.get("smt", {})
+verified = data.get("verification-results", {}).get("verified", "?")
+errors = data.get("verification-results", {}).get("errors", "?")
+
+funcs = []
+for mod in smt.get("smt-run-module-times", []):
+    for fn in mod.get("function-breakdown", []):
+        name = fn["function"].split("::")[-1]
+        module = mod["module"]
+        funcs.append({
+            "name": name,
+            "module": module,
+            "time_us": fn["time-micros"],
+            "rlimit": fn["rlimit"],
+            "ok": fn.get("success", True),
+        })
+
+funcs.sort(key=lambda x: x["rlimit"], reverse=True)
+total_us = sum(f["time_us"] for f in funcs)
+total_rl = sum(f["rlimit"] for f in funcs)
+
+lines = []
+lines.append(f"{verified} verified, {errors} errors")
+lines.append("")
+lines.append(f"{'#':>3}  {'Function':<48} {'Time':>10} {'Rlimit':>12}  {'Module'}")
+lines.append("-" * 100)
+
+for i, fn in enumerate(funcs[:top_n]):
+    ms = fn["time_us"] / 1000
+    rlimit_s = f"{fn['rlimit']:,}"
+    lines.append(f"{i+1:>3}  {fn['name']:<48} {ms:>8.1f}ms {rlimit_s:>12}  {fn['module']}")
+
+lines.append("")
+
+mods = {}
+for fn in funcs:
+    m = fn["module"]
+    if m not in mods:
+        mods[m] = {"time_us": 0, "rlimit": 0, "count": 0}
+    mods[m]["time_us"] += fn["time_us"]
+    mods[m]["rlimit"] += fn["rlimit"]
+    mods[m]["count"] += 1
+
+lines.append(f"{'Module':<35} {'Time':>10} {'Rlimit':>14}  {'Fns':>4}")
+lines.append("-" * 72)
+for m, v in sorted(mods.items(), key=lambda x: x[1]["rlimit"], reverse=True):
+    ms = v["time_us"] / 1000
+    lines.append(f"{m:<35} {ms:>8.1f}ms {v['rlimit']:>14,}  {v['count']:>4}")
+
+lines.append("")
+lines.append(f"Total: {len(funcs)} functions, {total_us/1000:.0f}ms SMT, {total_rl:,} rlimit")
+
+print("\n".join(lines))
+PYEOF
+"#;
+
+        let script = format!("{}{}", bash_preamble, python_part);
+        let output = match run_bash_script(&script, &crate_dir).await {
+            Ok(output) => output,
+            Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if stdout.trim().is_empty() {
+            // Check if a dependency failed due to --verify-module flag
+            if !module_flag.is_empty() && is_dependency_module_error(&stderr, &params.crate_name) {
+                let retry_preamble = build_profile_preamble(
+                    &default_verus_root,
+                    &params.crate_name,
+                    "",
+                    top_n,
+                );
+                let retry_script = format!("{}{}", retry_preamble, python_part);
+                let output = match run_bash_script(&retry_script, &crate_dir).await {
+                    Ok(output) => output,
+                    Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
+                };
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !stdout.trim().is_empty() {
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "(--verify-module bypassed: dependency recompilation detected, full crate profiled)\n\n{}",
+                        stdout
+                    ))]));
+                }
+                // Retry also failed
+                let lines: Vec<&str> = stderr.lines().collect();
+                let start = lines.len().saturating_sub(50);
+                let tail = lines[start..].join("\n");
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Profile failed\n\n{}", tail
+                ))]));
+            }
+
+            // Python or cargo failed — show stderr
+            let lines: Vec<&str> = stderr.lines().collect();
+            let start = lines.len().saturating_sub(50);
+            let tail = lines[start..].join("\n");
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Profile failed\n\n{}", tail
+            ))]));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(stdout.to_string())]))
     }
 
     #[tool(description = "Rebuild the index from disk. Use after editing Verus source files. Only re-parses files that changed since the last index.")]
