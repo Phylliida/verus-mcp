@@ -378,7 +378,7 @@ JSON_FILE="$(mktemp)"
 trap 'rm -f "$JSON_FILE"' EXIT
 
 cargo verus verify --manifest-path Cargo.toml -p {pkg} \
-  -- {module_flag}--output-json --time-expanded --triggers-mode silent > "$JSON_FILE" 2>&1 || true
+  -- {module_flag}--output-json --time-expanded --triggers-mode silent > "$JSON_FILE" || true
 
 python3 - "$JSON_FILE" "{top_n}" <<'PYEOF'
 "#,
@@ -492,6 +492,13 @@ impl VerusMcpServer {
                 ctx.items.push(name.to_string());
                 changed = true;
             }
+        }
+        // Trim to last 250 items to avoid context window limits on replay
+        const MAX_CONTEXT_ITEMS: usize = 250;
+        if ctx.items.len() > MAX_CONTEXT_ITEMS {
+            let drain_count = ctx.items.len() - MAX_CONTEXT_ITEMS;
+            ctx.items.drain(..drain_count);
+            changed = true;
         }
         if changed {
             if let Some(ref active_name) = ctx.active {
@@ -1569,7 +1576,11 @@ json_start = raw.find('{')
 if json_start < 0:
     print(f"error: no JSON object found in output.\n{raw[:500]}", file=sys.stderr)
     sys.exit(1)
-data, _ = json.JSONDecoder().raw_decode(raw, json_start)
+
+import re
+json_text = raw[json_start:]
+json_text = re.sub(r',\s*([}\]])', r'\1', json_text)
+data, _ = json.JSONDecoder().raw_decode(json_text)
 
 times = data.get("times-ms", {})
 smt = times.get("smt", {})
