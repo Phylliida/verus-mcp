@@ -343,7 +343,7 @@ esac
 export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
 export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
 export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
-cargo verus verify --manifest-path Cargo.toml -p {pkg} -- {module_flag}--triggers-mode silent
+cargo verus verify --manifest-path Cargo.toml -p {pkg} -- {module_flag}--triggers-mode silent 2>&1
 "#,
         default_verus_root = default_verus_root.display(),
         pkg = pkg,
@@ -493,8 +493,8 @@ impl VerusMcpServer {
                 changed = true;
             }
         }
-        // Trim to last 250 items to avoid context window limits on replay
-        const MAX_CONTEXT_ITEMS: usize = 250;
+        // Trim to last 100 items to avoid context window limits on replay
+        const MAX_CONTEXT_ITEMS: usize = 100;
         if ctx.items.len() > MAX_CONTEXT_ITEMS {
             let drain_count = ctx.items.len() - MAX_CONTEXT_ITEMS;
             ctx.items.drain(..drain_count);
