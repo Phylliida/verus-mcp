@@ -1,3 +1,4 @@
+mod editor;
 mod index;
 mod indexer;
 mod parser;

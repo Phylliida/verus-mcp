@@ -1,3 +1,4 @@
+use crate::editor;
 use crate::index::{Index, Matcher, DEFAULT_RESULTS, MAX_RESULTS};
 use crate::indexer;
 use crate::types::FnKind;
@@ -116,6 +117,137 @@ pub struct DependencyParams {
 pub struct ContextActivateParams {
     /// Context name to activate or create. Omit to list recent contexts.
     pub name: Option<String>,
+}
+
+// --- Unified search tool params (standalone mode only) ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FindParams {
+    /// Search query — name substring, clause/body content, module path, etc.
+    pub query: Option<String>,
+    /// Exact name for lookup, source view, trait search, module browsing, or dependencies
+    pub name: Option<String>,
+    /// Multiple names for batch lookup (max 10)
+    pub names: Option<Vec<String>>,
+    /// Search scope (omit for name search/lookup):
+    /// "ensures", "requires", "body", "doc" — search clause/body/doc content
+    /// "types" — search structs/enums by name
+    /// "signature" — search by param_type/return_type/type_bound
+    /// "trait" — trait definition + implementors
+    /// "module" — browse module contents
+    /// "modules" — list all modules
+    /// "dependencies" — callers/callees (set direction)
+    /// "stats" — index statistics
+    /// "source" — full source code of a function
+    pub scope: Option<String>,
+    /// Filter by function kind: "spec", "proof", "exec"
+    pub kind: Option<String>,
+    /// Filter by crate name
+    pub crate_name: Option<String>,
+    /// Filter by module path substring
+    pub module: Option<String>,
+    /// For signature search: match parameter types
+    pub param_type: Option<String>,
+    /// For signature search: match return type
+    pub return_type: Option<String>,
+    /// For signature search: match type parameter bounds
+    pub type_bound: Option<String>,
+    /// For dependencies: "callers" (default) or "callees"
+    pub direction: Option<String>,
+    /// Return full signatures with requires/ensures
+    #[serde(default)]
+    pub details: bool,
+    /// Only show trait axioms/methods
+    #[serde(default)]
+    pub trait_only: bool,
+    /// Max results (default 50, or 10 when details=true)
+    pub limit: Option<usize>,
+    /// Skip first N results for pagination
+    pub offset: Option<usize>,
+}
+
+// --- Code editing tool params (standalone mode only) ---
+
+/// Structured function definition. Provide EITHER `source` (raw source code)
+/// OR the structured fields (name, kind, params, body, etc.) — not both.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FnSpec {
+    /// Raw source code of the function. If provided, all other fields are ignored.
+    pub source: Option<String>,
+    /// Function name (required when not using raw source)
+    pub name: Option<String>,
+    /// Function kind: "spec", "proof", "exec", or omit for regular fn
+    pub kind: Option<String>,
+    /// Visibility: "pub", "pub(crate)", or omit for private
+    pub visibility: Option<String>,
+    /// Whether this is an `open` spec fn
+    #[serde(default)]
+    pub open: bool,
+    /// Generic type parameters, e.g. "<T: Ring>"
+    pub type_params: Option<String>,
+    /// Parameter list including parens, e.g. "(a: nat, b: nat)"
+    pub params: Option<String>,
+    /// Return type, e.g. "bool" or "(nat, nat)"
+    pub return_type: Option<String>,
+    /// Requires clauses (each is one predicate)
+    pub requires: Option<Vec<String>>,
+    /// Ensures clauses (each is one predicate)
+    pub ensures: Option<Vec<String>>,
+    /// Decreases clause, e.g. "n"
+    pub decreases: Option<String>,
+    /// Function body (content inside `{ }`). Omit for signature-only (trait methods).
+    pub body: Option<String>,
+    /// Doc comment text (will be prefixed with `///` per line)
+    pub doc: Option<String>,
+    /// Attributes, e.g. ["#[verifier::external_body]"]
+    pub annotations: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReadParams {
+    /// File or directory path. Omit for current directory.
+    pub path: Option<String>,
+    /// Function name to read full source (requires path to be a file).
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AddParams {
+    /// Absolute path to the file
+    pub file: String,
+    /// Use path to add (e.g., "vstd::prelude::*" or short name like "Ring" for auto-resolve)
+    pub use_path: Option<String>,
+    /// Module name to add as `pub mod <name>;`
+    pub mod_name: Option<String>,
+    /// Function definition (structured or raw source) — used when use_path and mod_name are both absent
+    #[serde(flatten)]
+    pub spec: FnSpec,
+    /// Insert after this function name (otherwise appends)
+    pub after: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RemoveParams {
+    /// Absolute path to the file
+    pub file: String,
+    /// Function name to remove (or "Type::method" for impl methods)
+    pub name: Option<String>,
+    /// Use path substring to match and remove
+    pub use_path: Option<String>,
+    /// Module name to remove (removes `pub mod <name>;` or `mod <name>;`)
+    pub mod_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EditParams {
+    /// Absolute path to the file
+    pub file: String,
+    /// Function name (or "Type::method") — replacement is scoped to this function only
+    pub name: String,
+    /// Exact string to find within the function (must be unique within it)
+    pub old_string: String,
+    /// Replacement string
+    pub new_string: String,
 }
 
 struct ContextState {
@@ -299,6 +431,112 @@ fn is_dependency_module_error(output: &str, target_pkg: &str) -> bool {
         }
     }
     false
+}
+
+/// Assemble function source code from a FnSpec. Returns the raw `source` if
+/// provided, otherwise builds it from structured fields.
+fn assemble_fn(spec: &FnSpec) -> Result<String, String> {
+    // Raw source shortcut
+    if let Some(ref src) = spec.source {
+        return Ok(src.clone());
+    }
+
+    let name = spec.name.as_deref().ok_or("Function name is required when not using raw source")?;
+
+    let mut out = String::new();
+
+    // Doc comment
+    if let Some(ref doc) = spec.doc {
+        for line in doc.lines() {
+            out.push_str(&format!("/// {}\n", line));
+        }
+    }
+
+    // Annotations
+    if let Some(ref annotations) = spec.annotations {
+        for ann in annotations {
+            if ann.starts_with("#[") {
+                out.push_str(ann);
+            } else {
+                out.push_str(&format!("#[{}]", ann));
+            }
+            out.push('\n');
+        }
+    }
+
+    // Signature line: [vis] [open] [kind] fn name[type_params](params) [-> ret]
+    let mut sig = String::new();
+    if let Some(ref vis) = spec.visibility {
+        sig.push_str(vis);
+        sig.push(' ');
+    }
+    if spec.open {
+        sig.push_str("open ");
+    }
+    if let Some(ref kind) = spec.kind {
+        sig.push_str(kind);
+        sig.push_str(" fn ");
+    } else {
+        sig.push_str("fn ");
+    }
+    sig.push_str(name);
+    if let Some(ref tp) = spec.type_params {
+        sig.push_str(tp);
+    }
+    sig.push_str(spec.params.as_deref().unwrap_or("()"));
+    if let Some(ref ret) = spec.return_type {
+        sig.push_str(" -> ");
+        sig.push_str(ret);
+    }
+    out.push_str(&sig);
+
+    // Requires
+    if let Some(ref reqs) = spec.requires {
+        if !reqs.is_empty() {
+            out.push_str("\n    requires\n");
+            for (i, r) in reqs.iter().enumerate() {
+                out.push_str("        ");
+                out.push_str(r);
+                if i + 1 < reqs.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+        }
+    }
+
+    // Ensures
+    if let Some(ref enss) = spec.ensures {
+        if !enss.is_empty() {
+            out.push_str("    ensures\n");
+            for (i, e) in enss.iter().enumerate() {
+                out.push_str("        ");
+                out.push_str(e);
+                if i + 1 < enss.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+        }
+    }
+
+    // Decreases
+    if let Some(ref dec) = spec.decreases {
+        out.push_str(&format!("    decreases {},\n", dec));
+    }
+
+    // Body
+    if let Some(ref body) = spec.body {
+        out.push_str("{\n");
+        for line in body.lines() {
+            out.push_str("    ");
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push('}');
+    }
+
+    Ok(out)
 }
 
 /// Run a bash script with a 10-minute timeout. Returns the process output.
@@ -1735,6 +1973,519 @@ PYEOF
             "Reindexed: {} fns + {} types",
             fn_count, type_count
         ))]))
+    }
+
+    // -----------------------------------------------------------------------
+    // Code editing tools (standalone mode only)
+    // -----------------------------------------------------------------------
+
+    /// Gate: require standalone mode for code editing tools.
+    fn require_standalone(&self) -> Option<String> {
+        if !crate::STANDALONE.load(std::sync::atomic::Ordering::Relaxed) {
+            Some("Code editing tools are only available in standalone mode.".into())
+        } else {
+            None
+        }
+    }
+
+    /// Compare use statements before/after a mutation and report only changes.
+    fn uses_diff(before: &str, after: &str) -> String {
+        let extract = |src: &str| -> std::collections::BTreeSet<String> {
+            editor::list_uses(src)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| !l.is_empty() && *l != "No use statements found.")
+                .map(|l| l.to_string())
+                .collect()
+        };
+        let before_uses = extract(before);
+        let after_uses = extract(after);
+        let mut diff = String::new();
+        for u in before_uses.difference(&after_uses) {
+            diff.push_str(&format!("- {}\n", u));
+        }
+        for u in after_uses.difference(&before_uses) {
+            diff.push_str(&format!("+ {}\n", u));
+        }
+        if diff.is_empty() {
+            String::new()
+        } else {
+            format!("\n\nImport changes:\n{}", diff.trim_end())
+        }
+    }
+
+    #[tool(description = "Unified search tool. Default (no scope): name substring search (query) or exact lookup (name) or batch lookup (names). Scopes: 'ensures'/'requires'/'body'/'doc' search clause/body/doc content; 'types' search structs/enums; 'signature' search by param_type/return_type/type_bound; 'trait' find trait+impls; 'module' browse module; 'modules' list all; 'dependencies' callers/callees; 'stats' index stats; 'source' full function source.")]
+    pub async fn find(
+        &self,
+        Parameters(params): Parameters<FindParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
+
+        match params.scope.as_deref() {
+            Some("ensures") | Some("requires") | Some("body") => {
+                let query = match params.query.or(params.name.clone()) {
+                    Some(q) => q,
+                    None => return Ok(CallToolResult::success(vec![Content::text(
+                        "Error: query is required for clause/body search.".to_string(),
+                    )])),
+                };
+                let cp = ClauseSearchParams {
+                    query,
+                    crate_name: params.crate_name,
+                    module: params.module,
+                    name: params.name,
+                    kind: params.kind,
+                    limit: params.limit,
+                    offset: params.offset,
+                };
+                match params.scope.as_deref().unwrap() {
+                    "ensures" => self.search_ensures(Parameters(cp)).await,
+                    "requires" => self.search_requires(Parameters(cp)).await,
+                    _ => self.search_body(Parameters(cp)).await,
+                }
+            }
+            Some("doc") => {
+                let query = match params.query.or(params.name.clone()) {
+                    Some(q) => q,
+                    None => return Ok(CallToolResult::success(vec![Content::text(
+                        "Error: query is required for doc search.".to_string(),
+                    )])),
+                };
+                self.search_doc(Parameters(ClauseSearchParams {
+                    query,
+                    crate_name: params.crate_name,
+                    module: params.module,
+                    name: params.name,
+                    kind: params.kind,
+                    limit: params.limit,
+                    offset: params.offset,
+                }))
+                .await
+            }
+            Some("types") => {
+                let query = match params.query.or(params.name) {
+                    Some(q) => q,
+                    None => return Ok(CallToolResult::success(vec![Content::text(
+                        "Error: query is required for type search.".to_string(),
+                    )])),
+                };
+                self.search_types(Parameters(ClauseSearchParams {
+                    query,
+                    crate_name: params.crate_name,
+                    module: params.module,
+                    name: None,
+                    kind: params.kind,
+                    limit: params.limit,
+                    offset: params.offset,
+                }))
+                .await
+            }
+            Some("signature") => {
+                self.search_signature(Parameters(SignatureSearchParams {
+                    param_type: params.param_type,
+                    return_type: params.return_type,
+                    type_bound: params.type_bound,
+                    name: params.name.or(params.query),
+                    kind: params.kind,
+                    crate_name: params.crate_name,
+                    module: params.module,
+                    limit: params.limit,
+                    offset: params.offset,
+                }))
+                .await
+            }
+            Some("trait") => {
+                let name = match params.name.or(params.query) {
+                    Some(n) => n,
+                    None => return Ok(CallToolResult::success(vec![Content::text(
+                        "Error: name is required for trait search.".to_string(),
+                    )])),
+                };
+                self.search_trait(Parameters(LookupParams { name })).await
+            }
+            Some("module") => {
+                let name = match params.query.or(params.name) {
+                    Some(n) => n,
+                    None => return Ok(CallToolResult::success(vec![Content::text(
+                        "Error: query (module path) is required for module browsing.".to_string(),
+                    )])),
+                };
+                self.browse_module(Parameters(LookupParams { name })).await
+            }
+            Some("modules") => self.list_modules().await,
+            Some("stats") => self.stats().await,
+            Some("source") => {
+                let name = match params.name.or(params.query) {
+                    Some(n) => n,
+                    None => return Ok(CallToolResult::success(vec![Content::text(
+                        "Error: name is required for source lookup.".to_string(),
+                    )])),
+                };
+                self.lookup_source(Parameters(LookupParams { name })).await
+            }
+            Some("dependencies") => {
+                let name = match params.name.or(params.query) {
+                    Some(n) => n,
+                    None => return Ok(CallToolResult::success(vec![Content::text(
+                        "Error: name is required for dependency search.".to_string(),
+                    )])),
+                };
+                self.find_dependencies(Parameters(DependencyParams {
+                    name,
+                    direction: params.direction,
+                }))
+                .await
+            }
+            Some(other) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Error: unknown scope '{}'. Valid: ensures, requires, body, doc, types, signature, trait, module, modules, dependencies, stats, source.",
+                other
+            ))])),
+            None => {
+                // Default: batch lookup, exact lookup, or name search
+                if let Some(names) = params.names {
+                    self.batch_lookup(Parameters(BatchLookupParams { names })).await
+                } else if let Some(name) = params.name {
+                    self.lookup(Parameters(LookupParams { name })).await
+                } else if let Some(query) = params.query {
+                    self.search(Parameters(SearchParams {
+                        query,
+                        kind: params.kind,
+                        crate_name: params.crate_name,
+                        module: params.module,
+                        trait_only: params.trait_only,
+                        details: params.details,
+                        limit: params.limit,
+                        offset: params.offset,
+                    }))
+                    .await
+                } else {
+                    Ok(CallToolResult::success(vec![Content::text(
+                        "Error: provide query, name, or names (or set scope).".to_string(),
+                    )]))
+                }
+            }
+        }
+    }
+
+    #[tool(description = "Smart reader. No args or directory path → list .rs files. File path → list all items with signatures + use/mod statements. File path + name → full function source.")]
+    pub async fn read(
+        &self,
+        Parameters(params): Parameters<ReadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
+        let path = params.path.unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| McpError::internal_error(format!("Cannot access {}: {}", path, e), None))?;
+
+        if meta.is_dir() {
+            let mut files = Vec::new();
+            for entry in walkdir::WalkDir::new(&path)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                if entry.path().extension().and_then(|e| e.to_str()) == Some("rs") {
+                    files.push(entry.path().display().to_string());
+                }
+            }
+            files.sort();
+            if files.is_empty() {
+                Ok(CallToolResult::success(vec![Content::text("No .rs files found.")]))
+            } else {
+                Ok(CallToolResult::success(vec![Content::text(files.join("\n"))]))
+            }
+        } else if let Some(name) = params.name {
+            let source = std::fs::read_to_string(&path)
+                .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", path, e), None))?;
+            match editor::read_fn(&source, &name) {
+                Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
+                Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
+            }
+        } else {
+            let source = std::fs::read_to_string(&path)
+                .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", path, e), None))?;
+            let mut parts = Vec::new();
+
+            // Use statements
+            if let Ok(uses) = editor::list_uses(&source) {
+                if uses != "No use statements found." {
+                    parts.push(uses);
+                }
+            }
+
+            // Mod statements
+            let mods: Vec<String> = source
+                .lines()
+                .filter(|l| {
+                    let t = l.trim();
+                    (t.starts_with("pub mod ") || t.starts_with("mod ")) && t.ends_with(';')
+                })
+                .map(|l| l.trim().to_string())
+                .collect();
+            if !mods.is_empty() {
+                parts.push(mods.join("\n"));
+            }
+
+            // Items
+            match editor::list_items(&source, None) {
+                Ok(items) if !items.is_empty() => parts.push(items),
+                _ => {}
+            }
+
+            let result = if parts.is_empty() {
+                "Empty file.".to_string()
+            } else {
+                parts.join("\n\n")
+            };
+            Ok(CallToolResult::success(vec![Content::text(result)]))
+        }
+    }
+
+    #[tool(description = "Add a use statement, mod declaration, or function to a file. Set use_path for imports (auto-resolves short names). Set mod_name for pub mod declarations. Otherwise provide function fields (structured or raw source).")]
+    pub async fn add(
+        &self,
+        Parameters(params): Parameters<AddParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
+
+        if let Some(ref use_path_raw) = params.use_path {
+            // --- Add use statement ---
+            let mut use_path = use_path_raw.clone();
+            if !use_path.contains("::") {
+                self.wait_ready().await;
+                let idx = self.index.read().map_err(|e| {
+                    McpError::internal_error(format!("Lock error: {}", e), None)
+                })?;
+                let matches = idx.resolve_import(&use_path);
+                match matches.len() {
+                    0 => {
+                        return Ok(CallToolResult::success(vec![Content::text(format!(
+                            "No item named '{}' found in the index. Provide a full path instead.",
+                            use_path
+                        ))]));
+                    }
+                    1 => {
+                        let (crate_name, module_path, item_name, _kind) = &matches[0];
+                        let crate_mod = crate_name.replace('-', "_");
+                        use_path = if module_path.is_empty() {
+                            format!("{}::{}", crate_mod, item_name)
+                        } else {
+                            format!("{}::{}::{}", crate_mod, module_path, item_name)
+                        };
+                    }
+                    _ => {
+                        let mut msg = format!(
+                            "'{}' is ambiguous. {} matches — call add again with one of:\n",
+                            use_path,
+                            matches.len()
+                        );
+                        for (crate_name, module_path, item_name, kind) in &matches {
+                            let crate_mod = crate_name.replace('-', "_");
+                            let full = if module_path.is_empty() {
+                                format!("{}::{}", crate_mod, item_name)
+                            } else {
+                                format!("{}::{}::{}", crate_mod, module_path, item_name)
+                            };
+                            msg.push_str(&format!("  [{}] {}\n", kind, full));
+                        }
+                        return Ok(CallToolResult::success(vec![Content::text(msg)]));
+                    }
+                }
+            }
+            let source = std::fs::read_to_string(&params.file)
+                .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
+            match editor::add_use(&source, &use_path) {
+                Ok(new_source) => {
+                    std::fs::write(&params.file, &new_source)
+                        .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
+                    let diff = Self::uses_diff(&source, &new_source);
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Added: use {};{}",
+                        use_path, diff
+                    ))]))
+                }
+                Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
+            }
+        } else if let Some(ref mod_name) = params.mod_name {
+            // --- Add pub mod statement ---
+            let source = std::fs::read_to_string(&params.file)
+                .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
+            let mod_line = format!("pub mod {};", mod_name);
+            if source
+                .lines()
+                .any(|l| l.trim() == mod_line || l.trim() == format!("mod {};", mod_name))
+            {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Module '{}' already declared.",
+                    mod_name
+                ))]));
+            }
+            // Find insertion point: after last mod decl, else after last use, else at top
+            let mut insert_pos = 0usize;
+            let mut pos = 0usize;
+            for line in source.split('\n') {
+                pos += line.len() + 1;
+                let t = line.trim();
+                if (t.starts_with("pub mod ") || t.starts_with("mod ")) && t.ends_with(';') {
+                    insert_pos = pos.min(source.len());
+                }
+            }
+            if insert_pos == 0 {
+                pos = 0;
+                for line in source.split('\n') {
+                    pos += line.len() + 1;
+                    if line.trim().starts_with("use ") {
+                        insert_pos = pos.min(source.len());
+                    }
+                }
+            }
+            let new_source = format!(
+                "{}{}{}",
+                &source[..insert_pos],
+                format!("{}\n", mod_line),
+                &source[insert_pos..]
+            );
+            std::fs::write(&params.file, &new_source)
+                .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "Added: {}",
+                mod_line
+            ))]))
+        } else {
+            // --- Add function ---
+            let fn_source = match assemble_fn(&params.spec) {
+                Ok(s) => s,
+                Err(e) => {
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Error: {}",
+                        e
+                    ))]))
+                }
+            };
+            let source = std::fs::read_to_string(&params.file)
+                .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
+            match editor::add_fn(&source, &fn_source, params.after.as_deref()) {
+                Ok(new_source) => {
+                    std::fs::write(&params.file, &new_source)
+                        .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
+                    let diff = Self::uses_diff(&source, &new_source);
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Added function to {}{}",
+                        params.file, diff
+                    ))]))
+                }
+                Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
+            }
+        }
+    }
+
+    #[tool(description = "Remove a function, use statement, or mod declaration from a file. Set name for functions, use_path for imports, mod_name for module declarations.")]
+    pub async fn remove(
+        &self,
+        Parameters(params): Parameters<RemoveParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
+        let source = std::fs::read_to_string(&params.file)
+            .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
+
+        if let Some(ref name) = params.name {
+            match editor::delete_fn(&source, name) {
+                Ok(new_source) => {
+                    std::fs::write(&params.file, &new_source)
+                        .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
+                    let diff = Self::uses_diff(&source, &new_source);
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Deleted function '{}' from {}{}",
+                        name, params.file, diff
+                    ))]))
+                }
+                Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
+            }
+        } else if let Some(ref use_path) = params.use_path {
+            match editor::remove_use(&source, use_path) {
+                Ok(new_source) => {
+                    std::fs::write(&params.file, &new_source)
+                        .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
+                    let diff = Self::uses_diff(&source, &new_source);
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Removed use statement matching '{}'{}",
+                        use_path, diff
+                    ))]))
+                }
+                Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
+            }
+        } else if let Some(ref mod_name) = params.mod_name {
+            let patterns = [
+                format!("pub mod {};", mod_name),
+                format!("mod {};", mod_name),
+            ];
+            let mut found = false;
+            let mut new_lines: Vec<&str> = Vec::new();
+            for line in source.lines() {
+                if !found && patterns.iter().any(|p| line.trim() == *p) {
+                    found = true;
+                    continue;
+                }
+                new_lines.push(line);
+            }
+            if !found {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Error: no mod declaration for '{}' found.",
+                    mod_name
+                ))]));
+            }
+            let mut new_source = new_lines.join("\n");
+            if source.ends_with('\n') && !new_source.ends_with('\n') {
+                new_source.push('\n');
+            }
+            std::fs::write(&params.file, &new_source)
+                .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "Removed mod declaration for '{}'",
+                mod_name
+            ))]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text(
+                "Error: specify name (function), use_path (import), or mod_name (module) to remove."
+                    .to_string(),
+            )]))
+        }
+    }
+
+    #[tool(description = "Edit a function by scoped string replacement. Finds old_string ONLY within the named function (not the whole file), replaces with new_string. old_string must be unique within the function.")]
+    pub async fn edit(
+        &self,
+        Parameters(params): Parameters<EditParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
+        let source = std::fs::read_to_string(&params.file)
+            .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
+        match editor::edit_fn(&source, &params.name, &params.old_string, &params.new_string) {
+            Ok(new_source) => {
+                std::fs::write(&params.file, &new_source)
+                    .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
+                let diff = Self::uses_diff(&source, &new_source);
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Edited function '{}' in {}{}",
+                    params.name, params.file, diff
+                ))]))
+            }
+            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
+        }
     }
 }
 

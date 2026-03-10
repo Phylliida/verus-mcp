@@ -1,6 +1,7 @@
 // Standalone entry point — disables context management so all tools work
 // without calling context_activate first.
 
+mod editor;
 mod index;
 mod indexer;
 mod parser;

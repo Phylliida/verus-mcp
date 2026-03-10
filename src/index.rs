@@ -942,4 +942,55 @@ impl Index {
         }
         map.into_iter().collect()
     }
+
+    /// Resolve a short name (e.g., "Ring") to possible import paths.
+    /// Returns Vec<(crate_name, module_path, item_name, item_kind)>.
+    pub fn resolve_import(&self, short_name: &str) -> Vec<(String, String, String, String)> {
+        let mut results = Vec::new();
+        let mut seen = HashSet::new();
+
+        for e in &self.entries {
+            if e.name == short_name {
+                let key = (e.crate_name.clone(), e.module_path.clone(), e.name.clone());
+                if seen.insert(key) {
+                    results.push((
+                        e.crate_name.clone(),
+                        e.module_path.clone(),
+                        e.name.clone(),
+                        e.kind.as_str().to_string(),
+                    ));
+                }
+            }
+        }
+
+        for e in &self.type_entries {
+            if e.name == short_name {
+                let key = (e.crate_name.clone(), e.module_path.clone(), e.name.clone());
+                if seen.insert(key) {
+                    results.push((
+                        e.crate_name.clone(),
+                        e.module_path.clone(),
+                        e.name.clone(),
+                        e.item_kind.as_str().to_string(),
+                    ));
+                }
+            }
+        }
+
+        for e in &self.trait_entries {
+            if e.name == short_name {
+                let key = (e.crate_name.clone(), e.module_path.clone(), e.name.clone());
+                if seen.insert(key) {
+                    results.push((
+                        e.crate_name.clone(),
+                        e.module_path.clone(),
+                        e.name.clone(),
+                        "trait".to_string(),
+                    ));
+                }
+            }
+        }
+
+        results
+    }
 }
