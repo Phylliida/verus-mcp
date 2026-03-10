@@ -1131,10 +1131,109 @@ fn leading_whitespace(line: &str) -> &str {
     &line[..line.len() - trimmed.len()]
 }
 
+/// Collect byte ranges of string literals and comments using tree-sitter,
+/// so we can skip braces inside them during depth counting.
+fn collect_skip_ranges(node: &tree_sitter::Node, ranges: &mut Vec<(usize, usize)>) {
+    match node.kind() {
+        "string_literal" | "raw_string_literal" | "char_literal"
+        | "line_comment" | "block_comment" => {
+            ranges.push((node.start_byte(), node.end_byte()));
+            return; // don't recurse into children
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_skip_ranges(&child, ranges);
+    }
+}
+
+/// Re-indent source code based on brace depth.
+/// Uses tree-sitter to identify string/comment regions (braces inside are ignored).
+/// Each `{` increases indent, each `}` decreases. 4 spaces per level.
+pub fn auto_indent(source: &str) -> String {
+    let mut parser = tree_sitter::Parser::new();
+    let skip_ranges = if parser.set_language(&tree_sitter_verus::LANGUAGE.into()).is_ok() {
+        if let Some(tree) = parser.parse(source.as_bytes(), None) {
+            let mut ranges = Vec::new();
+            collect_skip_ranges(&tree.root_node(), &mut ranges);
+            ranges.sort_by_key(|&(s, _)| s);
+            ranges
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    let is_skipped = |byte_pos: usize| -> bool {
+        skip_ranges.binary_search_by(|&(s, e)| {
+            if byte_pos < s { std::cmp::Ordering::Greater }
+            else if byte_pos >= e { std::cmp::Ordering::Less }
+            else { std::cmp::Ordering::Equal }
+        }).is_ok()
+    };
+
+    let mut depth: i32 = 0;
+    let mut result_lines = Vec::new();
+    let mut byte_offset = 0usize;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            result_lines.push(String::new());
+            byte_offset += line.len() + 1;
+            continue;
+        }
+
+        // Count leading `}` and `)` to decrease depth before indenting this line
+        let mut leading_closes = 0i32;
+        for ch in trimmed.chars() {
+            if ch == '}' || ch == ')' {
+                leading_closes += 1;
+            } else {
+                break;
+            }
+        }
+        let line_depth = (depth - leading_closes).max(0);
+        let indent = "    ".repeat(line_depth as usize);
+        result_lines.push(format!("{}{}", indent, trimmed));
+
+        // Update depth based on braces in this line
+        for (i, ch) in line.char_indices() {
+            let abs_pos = byte_offset + i;
+            if is_skipped(abs_pos) { continue; }
+            match ch {
+                '{' | '(' => depth += 1,
+                '}' | ')' => depth = (depth - 1).max(0),
+                _ => {}
+            }
+        }
+
+        byte_offset += line.len() + 1;
+    }
+
+    // Preserve trailing newline if original had one
+    let mut result = result_lines.join("\n");
+    if source.ends_with('\n') && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
 /// File-level edit: find `old_string` anywhere in the source and replace it.
 /// Matching ignores leading/trailing whitespace per line (indent-insensitive).
 /// Supports ellipsis wildcards (`...`, `{ ... }`) and fuzzy matching.
 pub fn edit_file(
+    source: &str,
+    old_string: &str,
+    new_string: &str,
+) -> Result<String, String> {
+    edit_file_inner(source, old_string, new_string).map(|r| auto_indent(&r))
+}
+
+fn edit_file_inner(
     source: &str,
     old_string: &str,
     new_string: &str,
@@ -1195,10 +1294,11 @@ pub fn edit_file(
     let max_total = 10;
     if old_string.len() >= 150 {
         if let Some((offset, matched_len, _dist)) = fuzzy_find(source, old_string, max_total) {
+            let adjusted = adjust_new_indent(source, offset, old_string, new_string);
             return Ok(format!(
                 "{}{}{}",
                 &source[..offset],
-                new_string,
+                adjusted,
                 &source[offset + matched_len..]
             ));
         }
@@ -1211,6 +1311,15 @@ pub fn edit_file(
 /// Matching ignores leading/trailing whitespace per line (indent-insensitive).
 /// Supports ellipsis wildcards (`...`, `{ ... }`) and fuzzy matching.
 pub fn edit_fn(
+    source: &str,
+    name: &str,
+    old_string: &str,
+    new_string: &str,
+) -> Result<String, String> {
+    edit_fn_inner(source, name, old_string, new_string).map(|r| auto_indent(&r))
+}
+
+fn edit_fn_inner(
     source: &str,
     name: &str,
     old_string: &str,
@@ -1293,10 +1402,11 @@ pub fn edit_fn(
     let max_total = 10;
     if old_string.len() >= 150 {
         if let Some((offset, matched_len, _dist)) = fuzzy_find(fn_text, old_string, max_total) {
+            let adjusted = adjust_new_indent(fn_text, offset, old_string, new_string);
             let new_fn_text = format!(
                 "{}{}{}",
                 &fn_text[..offset],
-                new_string,
+                adjusted,
                 &fn_text[offset + matched_len..]
             );
             return Ok(format!(
@@ -1319,12 +1429,12 @@ pub fn replace_fn(source: &str, name: &str, new_fn_source: &str) -> Result<Strin
     let items = parse_file(source)?;
     let found = find_fn(&items, name)?;
 
-    Ok(format!(
+    Ok(auto_indent(&format!(
         "{}{}{}",
         &source[..found.start_byte],
         new_fn_source,
         &source[found.end_byte..]
-    ))
+    )))
 }
 
 /// Delete a function by name, including preceding doc comments and cleanup.
@@ -1387,16 +1497,26 @@ pub fn add_fn(source: &str, new_fn_source: &str, after: Option<&str>) -> Result<
     let items = parse_file(source)?;
     let is_verus = detect_verus_fn(new_fn_source);
 
-    if is_verus {
+    let result = if is_verus {
         add_verus_fn(source, new_fn_source, after, &items)
     } else {
         add_regular_fn(source, new_fn_source, after, &items)
-    }
+    };
+    result.map(|r| auto_indent(&r))
 }
 
 /// Add a function inside a trait or impl block, identified by name.
 /// `inside` matches against trait name, type name, or "Trait for Type" signature.
 pub fn add_fn_inside(
+    source: &str,
+    new_fn_source: &str,
+    inside: &str,
+    after: Option<&str>,
+) -> Result<String, String> {
+    add_fn_inside_inner(source, new_fn_source, inside, after).map(|r| auto_indent(&r))
+}
+
+fn add_fn_inside_inner(
     source: &str,
     new_fn_source: &str,
     inside: &str,
