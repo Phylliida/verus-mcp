@@ -228,6 +228,8 @@ pub struct AddParams {
     pub spec: FnSpec,
     /// Insert after this function name (otherwise appends)
     pub after: Option<String>,
+    /// Trait or impl name to insert the method into (e.g., "MinimalPoly" or "Ring for SpecFieldExt")
+    pub inside: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -246,7 +248,7 @@ pub struct RemoveParams {
 pub struct EditParams {
     /// Absolute path to the file
     pub file: String,
-    /// Function name (or "Type::method") — replacement is scoped to this function only. Must not be null.
+    /// Function name (or "Type::method") to scope the edit. Omit to edit use statements.
     pub name: Option<String>,
     /// Exact string to find within the function (must be unique within it)
     pub old_string: String,
@@ -2645,6 +2647,8 @@ use_path → add a use statement. Accepts full paths ('vstd::prelude::*') or sho
 mod_name → add a `pub mod <name>;` declaration.
 Otherwise → add a function. Provide either raw `source` or structured fields (name, kind, params, requires, ensures, body, etc.). Verus functions (spec/proof/exec) are auto-placed inside the verus! block. Set `after` to insert after a specific function.
 
+inside → add the function inside a trait or impl block by name (e.g., 'MinimalPoly', 'Ring for SpecFieldExt'). Auto-indents to match existing methods.
+
 Reports import changes (added/removed use statements) after mutation.")]
     pub async fn add(
         &self,
@@ -2770,7 +2774,12 @@ Reports import changes (added/removed use statements) after mutation.")]
             };
             let source = std::fs::read_to_string(&params.file)
                 .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
-            match editor::add_fn(&source, &fn_source, params.after.as_deref()) {
+            let result = if let Some(ref inside) = params.inside {
+                editor::add_fn_inside(&source, &fn_source, inside, params.after.as_deref())
+            } else {
+                editor::add_fn(&source, &fn_source, params.after.as_deref())
+            };
+            match result {
                 Ok(new_source) => {
                     std::fs::write(&params.file, &new_source)
                         .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
@@ -2803,14 +2812,21 @@ Exactly one of name, use_path, or mod_name is required. Reports import changes a
             .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
 
         if let Some(ref name) = params.name {
+            // Read the function source before deleting so we can return it
+            let removed_source = editor::read_fn(&source, name).ok();
             match editor::delete_fn(&source, name) {
                 Ok(new_source) => {
                     std::fs::write(&params.file, &new_source)
                         .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
                     let diff = Self::uses_diff(&source, &new_source);
+                    let removed_section = if let Some(ref src) = removed_source {
+                        format!("\n\nRemoved:\n```\n{}\n```", src)
+                    } else {
+                        String::new()
+                    };
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Deleted function '{}' from {}{}",
-                        name, params.file, diff
+                        "Deleted function '{}' from {}{}{}",
+                        name, params.file, diff, removed_section
                     ))]))
                 }
                 Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
@@ -2868,11 +2884,13 @@ Exactly one of name, use_path, or mod_name is required. Reports import changes a
         }
     }
 
-    #[tool(description = "Edit a function via scoped string replacement.
+    #[tool(description = "Edit a function or use statement via scoped string replacement.
 
-Finds old_string within the named function only (not the whole file) and replaces it with new_string. old_string must appear exactly once within the function. Supports 'Type::method' for impl methods.
+With name: finds old_string within that function only and replaces with new_string. old_string must appear exactly once. Supports 'Type::method' for impl methods.
 
-Use this for surgical edits — changing a requires clause, fixing a body statement, renaming a parameter, etc.")]
+Without name: scoped to use statements only. Replaces old_string with new_string in the file's use declarations.
+
+Use this for surgical edits — changing a requires clause, fixing a body statement, renaming a parameter, updating imports, etc.")]
     pub async fn edit(
         &self,
         Parameters(params): Parameters<EditParams>,
@@ -2880,25 +2898,52 @@ Use this for surgical edits — changing a requires clause, fixing a body statem
         if let Some(msg) = self.require_standalone() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
-        let name = match params.name {
-            Some(ref n) if !n.is_empty() => n.as_str(),
-            _ => return Ok(CallToolResult::success(vec![Content::text(
-                "Error: `name` is required and must not be null/empty. Pass the function name (e.g. \"my_function\" or \"Type::method\") to scope the edit."
-            )])),
-        };
         let source = std::fs::read_to_string(&params.file)
             .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
-        match editor::edit_fn(&source, name, &params.old_string, &params.new_string) {
-            Ok(new_source) => {
-                std::fs::write(&params.file, &new_source)
-                    .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
-                let diff = Self::uses_diff(&source, &new_source);
-                Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Edited function '{}' in {}{}",
-                    name, params.file, diff
-                ))]))
+
+        // Check if old_string is a use statement edit
+        let old_trimmed = params.old_string.trim();
+        let is_use_edit = old_trimmed.starts_with("use ") || old_trimmed.starts_with("pub use ");
+
+        if is_use_edit {
+            let count = source.matches(&params.old_string).count();
+            if count == 0 {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    "Error: old_string not found in file."
+                )]));
             }
-            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
+            if count > 1 {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Error: old_string is ambiguous: found {} matches.", count
+                ))]));
+            }
+            let new_source = source.replacen(&params.old_string, &params.new_string, 1);
+            std::fs::write(&params.file, &new_source)
+                .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
+            let diff = Self::uses_diff(&source, &new_source);
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "Edited use statement in {}{}",
+                params.file, diff
+            ))]))
+        } else {
+            let name = match params.name {
+                Some(ref n) if !n.is_empty() => n.as_str(),
+                _ => return Ok(CallToolResult::success(vec![Content::text(
+                    "Error: `name` is required and must not be null/empty. Pass the function name (e.g. \"my_function\" or \"Type::method\") to scope the edit."
+                )])),
+            };
+            match editor::edit_fn(&source, name, &params.old_string, &params.new_string) {
+                Ok(new_source) => {
+                    std::fs::write(&params.file, &new_source)
+                        .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
+                    let diff = Self::uses_diff(&source, &new_source);
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Edited function '{}' in {}{}",
+                        name, params.file, diff
+                    ))]))
+                }
+                Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
+            }
         }
     }
 }

@@ -555,9 +555,9 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
             if include {
                 let has_body = t.kind != "type"; // type aliases have no body
                 let text = if has_body {
-                    format!("[{}] {} {{ ... }}", t.kind, t.signature)
+                    format!("{} {{ ... }}", t.signature)
                 } else {
-                    format!("[{}] {}", t.kind, t.signature)
+                    t.signature.clone()
                 };
                 entries.push((t.start_byte, text, in_verus(t.start_byte)));
             }
@@ -567,7 +567,7 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
     // Traits
     if kind_filter.is_none() || kind_filter == Some("trait") {
         for t in &items.traits {
-            entries.push((t.start_byte, format!("[trait] {} {{ ... }}", t.signature), in_verus(t.start_byte)));
+            entries.push((t.start_byte, format!("{} {{ ... }}", t.signature), in_verus(t.start_byte)));
         }
     }
 
@@ -765,6 +765,154 @@ pub fn add_fn(source: &str, new_fn_source: &str, after: Option<&str>) -> Result<
     }
 }
 
+/// Add a function inside a trait or impl block, identified by name.
+/// `inside` matches against trait name, type name, or "Trait for Type" signature.
+pub fn add_fn_inside(
+    source: &str,
+    new_fn_source: &str,
+    inside: &str,
+    after: Option<&str>,
+) -> Result<String, String> {
+    let items = parse_file(source)?;
+
+    // If `after` is provided, find that function and insert after it
+    // (only if it's inside the target block)
+    if let Some(after_name) = after {
+        if let Ok(after_fn) = find_fn(&items, after_name) {
+            let insert_pos = after_fn.end_byte;
+            // Detect indentation from after_fn
+            let line_start = source[..after_fn.start_byte].rfind('\n').map(|p| p + 1).unwrap_or(0);
+            let indent: String = source[line_start..]
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .collect();
+            let indented: String = new_fn_source
+                .lines()
+                .enumerate()
+                .map(|(i, line)| {
+                    if i == 0 { format!("{}{}", indent, line) } else if line.is_empty() { String::new() } else { format!("{}{}", indent, line) }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Ok(format!(
+                "{}\n\n{}{}",
+                &source[..insert_pos],
+                indented,
+                &source[insert_pos..]
+            ));
+        }
+    }
+
+    let inside_stripped = strip_generics(inside);
+
+    // Search traits first
+    for tr in &items.traits {
+        let tr_stripped = strip_generics(&tr.name);
+        if tr.name == inside || tr_stripped == inside_stripped {
+            return insert_before_closing_brace(source, tr.end_byte, new_fn_source);
+        }
+    }
+
+    // Search impls: match type_name, or "Trait for Type" pattern
+    for im in &items.impls {
+        let im_type_stripped = strip_generics(&im.type_name);
+        let sig_match = if let Some(ref trait_name) = im.trait_name {
+            let pattern = format!("{} for {}", strip_generics(trait_name), im_type_stripped);
+            pattern == inside_stripped || strip_generics(trait_name) == inside_stripped
+        } else {
+            false
+        };
+        if im.type_name == inside
+            || im_type_stripped == inside_stripped
+            || sig_match
+        {
+            return insert_before_closing_brace(source, im.end_byte, new_fn_source);
+        }
+    }
+
+    // List available targets
+    let mut targets = Vec::new();
+    for tr in &items.traits {
+        targets.push(format!("trait {}", tr.name));
+    }
+    for im in &items.impls {
+        targets.push(im.signature.clone());
+    }
+    Err(format!(
+        "No trait or impl matching '{}' found. Available:\n{}",
+        inside,
+        if targets.is_empty() { "  (none)".to_string() } else { targets.iter().map(|t| format!("  {}", t)).collect::<Vec<_>>().join("\n") }
+    ))
+}
+
+/// Insert source before the closing `}` of a block ending at `end_byte`.
+fn insert_before_closing_brace(
+    source: &str,
+    end_byte: usize,
+    new_fn_source: &str,
+) -> Result<String, String> {
+    // Find the closing `}` — it's at end_byte - 1 (or nearby with trailing whitespace)
+    let close_pos = source[..end_byte]
+        .rfind('}')
+        .ok_or_else(|| "Could not find closing brace of block".to_string())?;
+
+    // Detect indentation from the block body
+    let before_close = &source[..close_pos];
+    let last_newline = before_close.rfind('\n').unwrap_or(0);
+    let existing_content = before_close[last_newline..].trim();
+
+    // Find the indentation used in the block (look at existing methods or use 4 spaces)
+    let indent = detect_block_indent(source, close_pos);
+
+    let indented: String = new_fn_source
+        .lines()
+        .enumerate()
+        .map(|(_, line)| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("{}{}", indent, line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let needs_newline = !existing_content.is_empty();
+    let prefix = if needs_newline { "\n\n" } else { "" };
+
+    Ok(format!(
+        "{}{}{}{}{}",
+        &source[..close_pos],
+        prefix,
+        indented,
+        "\n",
+        &source[close_pos..]
+    ))
+}
+
+/// Detect indentation level used inside a block by looking at lines before close_pos.
+fn detect_block_indent(source: &str, close_pos: usize) -> String {
+    // Walk backwards from close_pos to find a non-empty line inside the block
+    for line in source[..close_pos].lines().rev() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && (trimmed.starts_with("fn ")
+            || trimmed.starts_with("spec fn ")
+            || trimmed.starts_with("proof fn ")
+            || trimmed.starts_with("exec fn ")
+            || trimmed.starts_with("open spec fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("pub spec fn ")
+            || trimmed.starts_with("pub proof fn ")
+            || trimmed.starts_with("pub exec fn ")
+            || trimmed.starts_with("pub open spec fn "))
+        {
+            let leading: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            return leading;
+        }
+    }
+    "    ".to_string() // default 4 spaces
+}
+
 /// List all use statements in a file.
 pub fn list_uses(source: &str) -> Result<String, String> {
     let items = parse_file(source)?;
@@ -868,6 +1016,22 @@ pub fn remove_use(source: &str, path: &str) -> Result<String, String> {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Strip generic parameters from a name: `Foo<A, B>::bar` → `Foo::bar`
+fn strip_generics(s: &str) -> String {
+    let mut result = String::new();
+    let mut depth = 0usize;
+    for ch in s.chars() {
+        if ch == '<' {
+            depth += 1;
+        } else if ch == '>' {
+            depth = depth.saturating_sub(1);
+        } else if depth == 0 {
+            result.push(ch);
+        }
+    }
+    result
+}
+
 /// Find a function by name or qualified name. Returns an error if not found
 /// or if ambiguous.
 fn find_fn<'a>(items: &'a FileItems, name: &str) -> Result<&'a LocatedFn, String> {
@@ -885,10 +1049,16 @@ fn find_fn<'a>(items: &'a FileItems, name: &str) -> Result<&'a LocatedFn, String
         name
     };
 
+    let name_stripped = strip_generics(name);
+
     let matches: Vec<&LocatedFn> = items
         .functions
         .iter()
-        .filter(|f| f.name == name || f.qualified_name == name)
+        .filter(|f| {
+            f.name == name
+                || f.qualified_name == name
+                || strip_generics(&f.qualified_name) == name_stripped
+        })
         .collect();
 
     match matches.len() {
