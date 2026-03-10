@@ -842,8 +842,10 @@ fn fuzzy_find(haystack: &str, needle: &str, max_total: usize) -> Option<(usize, 
 enum EllipsisGap {
     /// `...` — match smallest arbitrary text
     Any,
-    /// `{ ... }` — match a brace-balanced block (from `{` to matching `}`)
+    /// `{ ... }` on its own line — match a brace-balanced block (from `{` to matching `}`)
     BraceBlock,
+    /// `{ ... }` at end of a line (inline) — literal prefix + brace-balanced block
+    InlineBraceBlock,
 }
 
 /// A segment is either a literal string or a gap (wildcard).
@@ -853,13 +855,18 @@ enum EllipsisPart {
     Gap(EllipsisGap),
 }
 
-/// Split old_string on ellipsis wildcard lines (`...` or `{ ... }`).
-/// Returns None if no wildcard lines are found.
+/// Split old_string on ellipsis wildcards.
+/// Recognized patterns:
+/// - A line whose trimmed content is `...` → Gap(Any)
+/// - A line whose trimmed content is `{ ... }` or `{...}` → Gap(BraceBlock)
+/// - A line ending with `{ ... }` or `{...}` (inline) → literal prefix + Gap(BraceBlock)
+/// Returns None if no wildcards are found.
 fn split_on_ellipsis(old_string: &str) -> Option<Vec<EllipsisPart>> {
     let lines: Vec<&str> = old_string.lines().collect();
     let has_wildcard = lines.iter().any(|l| {
         let t = l.trim();
         t == "..." || t == "{ ... }" || t == "{...}"
+            || t.ends_with("{ ... }") || t.ends_with("{...}")
     });
     if !has_wildcard {
         return None;
@@ -869,17 +876,32 @@ fn split_on_ellipsis(old_string: &str) -> Option<Vec<EllipsisPart>> {
 
     for line in &lines {
         let t = line.trim();
-        if t == "..." || t == "{ ... }" || t == "{...}" {
+        if t == "..." {
             let text = current.join("\n");
             if !text.is_empty() {
                 parts.push(EllipsisPart::Literal(text));
             }
             current.clear();
-            parts.push(EllipsisPart::Gap(if t == "..." {
-                EllipsisGap::Any
-            } else {
-                EllipsisGap::BraceBlock
-            }));
+            parts.push(EllipsisPart::Gap(EllipsisGap::Any));
+        } else if t == "{ ... }" || t == "{...}" {
+            let text = current.join("\n");
+            if !text.is_empty() {
+                parts.push(EllipsisPart::Literal(text));
+            }
+            current.clear();
+            parts.push(EllipsisPart::Gap(EllipsisGap::BraceBlock));
+        } else if t.ends_with("{ ... }") || t.ends_with("{...}") {
+            // Inline trailing brace block: split line at the `{`
+            let suffix = if t.ends_with("{ ... }") { "{ ... }" } else { "{...}" };
+            let prefix = &line[..line.len() - suffix.len()];
+            // Add prefix (with preceding lines) as literal
+            current.push(prefix);
+            let text = current.join("\n");
+            if !text.is_empty() {
+                parts.push(EllipsisPart::Literal(text));
+            }
+            current.clear();
+            parts.push(EllipsisPart::Gap(EllipsisGap::InlineBraceBlock));
         } else {
             current.push(line);
         }
@@ -911,10 +933,122 @@ fn find_matching_brace(text: &str, start: usize) -> Option<usize> {
     None
 }
 
+/// Find a literal segment (possibly multi-line) in haystack starting from `from_byte`,
+/// ignoring leading/trailing whitespace per line.
+/// If `prefix_last_line` is true, the last line matches as a prefix (for inline `{ ... }`).
+/// Returns (start_byte, end_byte) of first match.
+fn find_literal_normalized(
+    haystack: &str,
+    literal: &str,
+    from_byte: usize,
+    prefix_last_line: bool,
+) -> Option<(usize, usize)> {
+    let lit_lines: Vec<&str> = literal.lines().collect();
+    if lit_lines.is_empty() {
+        return Some((from_byte, from_byte));
+    }
+
+    let lit_trimmed: Vec<&str> = lit_lines.iter().map(|l| l.trim()).collect();
+    if lit_trimmed.iter().all(|l| l.is_empty()) {
+        return None;
+    }
+
+    // Build line index for haystack: (byte_offset, line_text)
+    let mut hay_lines: Vec<(usize, &str)> = Vec::new();
+    let mut offset = 0;
+    for line in haystack.lines() {
+        hay_lines.push((offset, line));
+        offset += line.len() + 1;
+    }
+
+    let n = lit_trimmed.len();
+
+    for start_idx in 0..hay_lines.len() {
+        let (line_start, _) = hay_lines[start_idx];
+        if line_start < from_byte { continue; }
+        if start_idx + n > hay_lines.len() { break; }
+
+        let matches = (0..n).all(|j| {
+            let hay_t = hay_lines[start_idx + j].1.trim();
+            let lit_t = lit_trimmed[j];
+            if j == n - 1 && prefix_last_line {
+                hay_t.starts_with(lit_t)
+            } else {
+                hay_t == lit_t
+            }
+        });
+
+        if matches {
+            let start_byte = hay_lines[start_idx].0;
+            let end_idx = start_idx + n - 1;
+            let end_byte = if prefix_last_line {
+                // For prefix match: end at the end of the matched prefix content in the line
+                // Find where the trimmed literal prefix ends in the actual haystack line
+                let (line_off, line_text) = hay_lines[end_idx];
+                let leading = line_text.len() - line_text.trim_start().len();
+                line_off + leading + lit_trimmed[n - 1].len()
+            } else {
+                let (line_off, line_text) = hay_lines[end_idx];
+                line_off + line_text.len()
+            };
+            return Some((start_byte, end_byte));
+        }
+    }
+    None
+}
+
+/// Find a literal in haystack ignoring indent, returning all matches (for ambiguity check).
+fn find_all_literal_normalized(
+    haystack: &str,
+    literal: &str,
+) -> Vec<(usize, usize)> {
+    let mut results = Vec::new();
+    let mut from = 0;
+    while let Some((start, end)) = find_literal_normalized(haystack, literal, from, false) {
+        results.push((start, end));
+        // Move past the start of this match to find next
+        // Advance by at least one line
+        from = haystack[start..].find('\n').map(|p| start + p + 1).unwrap_or(haystack.len());
+    }
+    results
+}
+
+/// Adjust new_string indentation to match the indentation at match_start in source.
+fn adjust_new_indent(source: &str, match_start: usize, old_string: &str, new_string: &str) -> String {
+    // Find indent of source at match_start
+    let line_start = source[..match_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let src_indent = leading_whitespace(&source[line_start..]);
+
+    // Find indent of old_string's first non-empty line
+    let old_indent = old_string.lines()
+        .find(|l| !l.trim().is_empty())
+        .map(leading_whitespace)
+        .unwrap_or("");
+
+    if src_indent == old_indent {
+        return new_string.to_string();
+    }
+
+    new_string.lines().map(|line| {
+        if line.trim().is_empty() {
+            line.to_string()
+        } else {
+            let li = leading_whitespace(line);
+            if li.len() >= old_indent.len() && li.starts_with(old_indent) {
+                let extra = &li[old_indent.len()..];
+                format!("{}{}{}", src_indent, extra, line.trim_start())
+            } else {
+                format!("{}{}", src_indent, line.trim_start())
+            }
+        }
+    }).collect::<Vec<_>>().join("\n")
+}
+
 /// Find all (start, end) byte spans in `haystack` that match the ellipsis pattern.
+/// Matching ignores leading/trailing whitespace per line.
 /// `...` gaps match the smallest text; `{ ... }` gaps match a brace-balanced block.
 fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usize)> {
-    // Collect literal segments (non-empty only)
+    // Collect literal segments with their part index
     let literals: Vec<(usize, &str)> = parts.iter().enumerate().filter_map(|(i, p)| {
         if let EllipsisPart::Literal(s) = p {
             if !s.is_empty() { return Some((i, s.as_str())); }
@@ -927,24 +1061,30 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
     }
 
     let (first_idx, first_lit) = literals[0];
+    // Check if the part after the first literal is an InlineBraceBlock
+    let first_prefix = first_idx + 1 < parts.len()
+        && matches!(&parts[first_idx + 1], EllipsisPart::Gap(EllipsisGap::InlineBraceBlock));
     let mut results = Vec::new();
     let mut search_from = 0;
 
-    while let Some(rel) = haystack[search_from..].find(first_lit) {
-        let match_start = search_from + rel;
-        let mut current_end = match_start + first_lit.len();
+    while let Some((match_start, seg_end)) = find_literal_normalized(haystack, first_lit, search_from, first_prefix) {
+        let mut current_end = seg_end;
         let mut valid = true;
 
         for &(part_idx, lit) in &literals[1..] {
             // Check if the gap before this literal is a brace block
-            let gap_is_brace = part_idx > 0 && matches!(&parts[part_idx - 1], EllipsisPart::Gap(EllipsisGap::BraceBlock));
+            let gap_is_brace = part_idx > 0 && matches!(
+                &parts[part_idx - 1],
+                EllipsisPart::Gap(EllipsisGap::BraceBlock) | EllipsisPart::Gap(EllipsisGap::InlineBraceBlock)
+            );
+            // Check if the part after this literal is an InlineBraceBlock
+            let this_prefix = part_idx + 1 < parts.len()
+                && matches!(&parts[part_idx + 1], EllipsisPart::Gap(EllipsisGap::InlineBraceBlock));
 
             if gap_is_brace {
-                // Skip past a brace-balanced block, then find the literal after it
                 if let Some(after_brace) = find_matching_brace(haystack, current_end) {
-                    // The literal should appear at or after the brace close
-                    if let Some(pos) = haystack[after_brace..].find(lit) {
-                        current_end = after_brace + pos + lit.len();
+                    if let Some((_seg_start, seg_end)) = find_literal_normalized(haystack, lit, after_brace, this_prefix) {
+                        current_end = seg_end;
                     } else {
                         valid = false;
                         break;
@@ -955,8 +1095,8 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
                 }
             } else {
                 // Regular `...` gap — find nearest occurrence
-                if let Some(pos) = haystack[current_end..].find(lit) {
-                    current_end = current_end + pos + lit.len();
+                if let Some((_seg_start, seg_end)) = find_literal_normalized(haystack, lit, current_end, this_prefix) {
+                    current_end = seg_end;
                 } else {
                     valid = false;
                     break;
@@ -966,7 +1106,7 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
 
         // If the last part is a brace block gap, consume it
         if valid {
-            if let Some(EllipsisPart::Gap(EllipsisGap::BraceBlock)) = parts.last() {
+            if let Some(EllipsisPart::Gap(EllipsisGap::BraceBlock | EllipsisGap::InlineBraceBlock)) = parts.last() {
                 if let Some(after_brace) = find_matching_brace(haystack, current_end) {
                     current_end = after_brace;
                 } else {
@@ -978,34 +1118,42 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
         if valid {
             results.push((match_start, current_end));
         }
-        search_from = match_start + 1;
+        // Advance search past this match start
+        search_from = haystack[match_start..].find('\n').map(|p| match_start + p + 1).unwrap_or(haystack.len());
     }
 
     results
 }
 
+/// Get the leading whitespace of a line.
+fn leading_whitespace(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    &line[..line.len() - trimmed.len()]
+}
+
 /// File-level edit: find `old_string` anywhere in the source and replace it.
-/// Supports ellipsis wildcards and fuzzy matching.
+/// Matching ignores leading/trailing whitespace per line (indent-insensitive).
+/// Supports ellipsis wildcards (`...`, `{ ... }`) and fuzzy matching.
 pub fn edit_file(
     source: &str,
     old_string: &str,
     new_string: &str,
 ) -> Result<String, String> {
-    // Exact match
-    let matches: Vec<usize> = source
+    // 1. Exact match (fast path)
+    let exact: Vec<usize> = source
         .match_indices(old_string)
         .map(|(pos, _)| pos)
         .collect();
 
-    if matches.len() > 1 {
+    if exact.len() > 1 {
         return Err(format!(
             "old_string is ambiguous: found {} matches in file. Provide more context.",
-            matches.len()
+            exact.len()
         ));
     }
 
-    if matches.len() == 1 {
-        let pos = matches[0];
+    if exact.len() == 1 {
+        let pos = exact[0];
         return Ok(format!(
             "{}{}{}",
             &source[..pos],
@@ -1014,26 +1162,36 @@ pub fn edit_file(
         ));
     }
 
-    // Ellipsis wildcard matching
+    // 2. Indent-normalized matching (with or without ellipsis wildcards)
     if let Some(segments) = split_on_ellipsis(old_string) {
+        // Has wildcards — use normalized ellipsis matching
         let matches = find_with_ellipsis(source, &segments);
         if matches.len() == 1 {
             let (start, end) = matches[0];
-            return Ok(format!(
-                "{}{}{}",
-                &source[..start],
-                new_string,
-                &source[end..]
-            ));
+            let adjusted = adjust_new_indent(source, start, old_string, new_string);
+            return Ok(format!("{}{}{}", &source[..start], adjusted, &source[end..]));
         } else if matches.len() > 1 {
             return Err(format!(
-                "Ellipsis pattern is ambiguous: found {} matches in file. Provide more context.",
+                "Pattern is ambiguous: found {} matches in file. Provide more context.",
+                matches.len()
+            ));
+        }
+    } else {
+        // No wildcards — use normalized line matching
+        let matches = find_all_literal_normalized(source, old_string);
+        if matches.len() == 1 {
+            let (start, end) = matches[0];
+            let adjusted = adjust_new_indent(source, start, old_string, new_string);
+            return Ok(format!("{}{}{}", &source[..start], adjusted, &source[end..]));
+        } else if matches.len() > 1 {
+            return Err(format!(
+                "Indent-normalized match is ambiguous: found {} matches. Provide more context.",
                 matches.len()
             ));
         }
     }
 
-    // Fuzzy matching (only for substantial old_strings)
+    // 3. Fuzzy matching (only for substantial old_strings)
     let max_total = 10;
     if old_string.len() >= 150 {
         if let Some((offset, matched_len, _dist)) = fuzzy_find(source, old_string, max_total) {
@@ -1046,11 +1204,12 @@ pub fn edit_file(
         }
     }
 
-    Err("old_string not found in file (no exact, ellipsis, or fuzzy match)".to_string())
+    Err("old_string not found in file (no exact, ellipsis, indent-normalized, or fuzzy match)".to_string())
 }
 
 /// Scoped edit: find `old_string` within the function's source text and replace it.
-/// Falls back to ellipsis wildcard matching, then fuzzy line-level matching.
+/// Matching ignores leading/trailing whitespace per line (indent-insensitive).
+/// Supports ellipsis wildcards (`...`, `{ ... }`) and fuzzy matching.
 pub fn edit_fn(
     source: &str,
     name: &str,
@@ -1061,22 +1220,22 @@ pub fn edit_fn(
     let found = find_fn(&items, name)?;
     let fn_text = &source[found.start_byte..found.end_byte];
 
-    // Find old_string within the function
-    let matches: Vec<usize> = fn_text
+    // 1. Exact match (fast path)
+    let exact: Vec<usize> = fn_text
         .match_indices(old_string)
         .map(|(pos, _)| pos)
         .collect();
 
-    if matches.len() > 1 {
+    if exact.len() > 1 {
         return Err(format!(
             "old_string is ambiguous: found {} matches within function '{}'. Provide a larger snippet for uniqueness.",
-            matches.len(),
+            exact.len(),
             name
         ));
     }
 
-    if matches.len() == 1 {
-        let match_pos = matches[0];
+    if exact.len() == 1 {
+        let match_pos = exact[0];
         let new_fn_text = format!(
             "{}{}{}",
             &fn_text[..match_pos],
@@ -1091,17 +1250,13 @@ pub fn edit_fn(
         ));
     }
 
-    // Exact match failed — try ellipsis wildcard matching
+    // 2. Indent-normalized matching (with or without ellipsis wildcards)
     if let Some(segments) = split_on_ellipsis(old_string) {
         let matches = find_with_ellipsis(fn_text, &segments);
         if matches.len() == 1 {
             let (start, end) = matches[0];
-            let new_fn_text = format!(
-                "{}{}{}",
-                &fn_text[..start],
-                new_string,
-                &fn_text[end..]
-            );
+            let adjusted = adjust_new_indent(fn_text, start, old_string, new_string);
+            let new_fn_text = format!("{}{}{}", &fn_text[..start], adjusted, &fn_text[end..]);
             return Ok(format!(
                 "{}{}{}",
                 &source[..found.start_byte],
@@ -1110,14 +1265,31 @@ pub fn edit_fn(
             ));
         } else if matches.len() > 1 {
             return Err(format!(
-                "Ellipsis pattern is ambiguous: found {} matches within function '{}'. Provide more context.",
+                "Pattern is ambiguous: found {} matches within function '{}'. Provide more context.",
                 matches.len(), name
             ));
         }
-        // 0 matches — fall through to fuzzy
+    } else {
+        let matches = find_all_literal_normalized(fn_text, old_string);
+        if matches.len() == 1 {
+            let (start, end) = matches[0];
+            let adjusted = adjust_new_indent(fn_text, start, old_string, new_string);
+            let new_fn_text = format!("{}{}{}", &fn_text[..start], adjusted, &fn_text[end..]);
+            return Ok(format!(
+                "{}{}{}",
+                &source[..found.start_byte],
+                new_fn_text,
+                &source[found.end_byte..]
+            ));
+        } else if matches.len() > 1 {
+            return Err(format!(
+                "Indent-normalized match is ambiguous: found {} matches within function '{}'. Provide more context.",
+                matches.len(), name
+            ));
+        }
     }
 
-    // Try fuzzy line-level match (only for substantial old_strings)
+    // 3. Fuzzy matching (only for substantial old_strings)
     let max_total = 10;
     if old_string.len() >= 150 {
         if let Some((offset, matched_len, _dist)) = fuzzy_find(fn_text, old_string, max_total) {
@@ -1137,7 +1309,7 @@ pub fn edit_fn(
     }
 
     Err(format!(
-        "old_string not found within function '{}' (no exact or fuzzy match)",
+        "old_string not found within function '{}' (no exact, indent-normalized, or fuzzy match)",
         name
     ))
 }
