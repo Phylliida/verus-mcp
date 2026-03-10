@@ -564,10 +564,24 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
         }
     }
 
-    // Traits
+    // Traits — show header, then each method with signature on its own line
     if kind_filter.is_none() || kind_filter == Some("trait") {
         for t in &items.traits {
-            entries.push((t.start_byte, format!("{} {{ ... }}", t.signature), in_verus(t.start_byte)));
+            if t.methods.is_empty() {
+                entries.push((t.start_byte, format!("{} {{ ... }}", t.signature), in_verus(t.start_byte)));
+            } else {
+                let mut lines = vec![format!("{} {{", t.signature)];
+                for m in &t.methods {
+                    let has_body = source[m.start_byte..m.end_byte].trim_end().ends_with('}');
+                    if has_body {
+                        lines.push(format!("    {} {{ ... }}", m.signature));
+                    } else {
+                        lines.push(format!("    {}", m.signature));
+                    }
+                }
+                lines.push("}".to_string());
+                entries.push((t.start_byte, lines.join("\n"), in_verus(t.start_byte)));
+            }
         }
     }
 
@@ -823,51 +837,141 @@ fn fuzzy_find(haystack: &str, needle: &str, max_total: usize) -> Option<(usize, 
     }
 }
 
-/// Split old_string on lines whose trimmed content is exactly "..." (ellipsis wildcard).
-/// Returns None if no wildcard lines are found. Each `...` line can span multiple
-/// skipped lines in the actual source ("match the smallest string that fits").
-fn split_on_ellipsis(old_string: &str) -> Option<Vec<String>> {
+/// Wildcard gap type in an ellipsis pattern.
+#[derive(Debug, Clone, PartialEq)]
+enum EllipsisGap {
+    /// `...` — match smallest arbitrary text
+    Any,
+    /// `{ ... }` — match a brace-balanced block (from `{` to matching `}`)
+    BraceBlock,
+}
+
+/// A segment is either a literal string or a gap (wildcard).
+#[derive(Debug, Clone)]
+enum EllipsisPart {
+    Literal(String),
+    Gap(EllipsisGap),
+}
+
+/// Split old_string on ellipsis wildcard lines (`...` or `{ ... }`).
+/// Returns None if no wildcard lines are found.
+fn split_on_ellipsis(old_string: &str) -> Option<Vec<EllipsisPart>> {
     let lines: Vec<&str> = old_string.lines().collect();
-    if !lines.iter().any(|l| l.trim() == "...") {
+    let has_wildcard = lines.iter().any(|l| {
+        let t = l.trim();
+        t == "..." || t == "{ ... }" || t == "{...}"
+    });
+    if !has_wildcard {
         return None;
     }
-    let mut segments = Vec::new();
+    let mut parts = Vec::new();
     let mut current: Vec<&str> = Vec::new();
+
     for line in &lines {
-        if line.trim() == "..." {
-            segments.push(current.join("\n"));
+        let t = line.trim();
+        if t == "..." || t == "{ ... }" || t == "{...}" {
+            let text = current.join("\n");
+            if !text.is_empty() {
+                parts.push(EllipsisPart::Literal(text));
+            }
             current.clear();
+            parts.push(EllipsisPart::Gap(if t == "..." {
+                EllipsisGap::Any
+            } else {
+                EllipsisGap::BraceBlock
+            }));
         } else {
             current.push(line);
         }
     }
-    segments.push(current.join("\n"));
-    Some(segments)
+    let text = current.join("\n");
+    if !text.is_empty() {
+        parts.push(EllipsisPart::Literal(text));
+    }
+    Some(parts)
 }
 
-/// Find all (start, end) byte spans in `haystack` that match the ellipsis-segmented pattern.
-/// Each non-empty segment must appear in order; `...` gaps match the smallest text between them.
-fn find_with_ellipsis(haystack: &str, segments: &[String]) -> Vec<(usize, usize)> {
-    let non_empty: Vec<&str> = segments.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
-    if non_empty.is_empty() {
+/// Find the byte offset right after the matching `}` for a `{` at `start` in `text`.
+/// `start` should point to a position where we search for the first `{`.
+fn find_matching_brace(text: &str, start: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut found_open = false;
+    for (i, ch) in text[start..].char_indices() {
+        match ch {
+            '{' => { depth += 1; found_open = true; }
+            '}' => {
+                depth -= 1;
+                if found_open && depth == 0 {
+                    return Some(start + i + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Find all (start, end) byte spans in `haystack` that match the ellipsis pattern.
+/// `...` gaps match the smallest text; `{ ... }` gaps match a brace-balanced block.
+fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usize)> {
+    // Collect literal segments (non-empty only)
+    let literals: Vec<(usize, &str)> = parts.iter().enumerate().filter_map(|(i, p)| {
+        if let EllipsisPart::Literal(s) = p {
+            if !s.is_empty() { return Some((i, s.as_str())); }
+        }
+        None
+    }).collect();
+
+    if literals.is_empty() {
         return vec![];
     }
 
-    let first = non_empty[0];
+    let (first_idx, first_lit) = literals[0];
     let mut results = Vec::new();
     let mut search_from = 0;
 
-    while let Some(rel) = haystack[search_from..].find(first) {
+    while let Some(rel) = haystack[search_from..].find(first_lit) {
         let match_start = search_from + rel;
-        let mut current_end = match_start + first.len();
+        let mut current_end = match_start + first_lit.len();
         let mut valid = true;
 
-        for &seg in &non_empty[1..] {
-            if let Some(pos) = haystack[current_end..].find(seg) {
-                current_end = current_end + pos + seg.len();
+        for &(part_idx, lit) in &literals[1..] {
+            // Check if the gap before this literal is a brace block
+            let gap_is_brace = part_idx > 0 && matches!(&parts[part_idx - 1], EllipsisPart::Gap(EllipsisGap::BraceBlock));
+
+            if gap_is_brace {
+                // Skip past a brace-balanced block, then find the literal after it
+                if let Some(after_brace) = find_matching_brace(haystack, current_end) {
+                    // The literal should appear at or after the brace close
+                    if let Some(pos) = haystack[after_brace..].find(lit) {
+                        current_end = after_brace + pos + lit.len();
+                    } else {
+                        valid = false;
+                        break;
+                    }
+                } else {
+                    valid = false;
+                    break;
+                }
             } else {
-                valid = false;
-                break;
+                // Regular `...` gap — find nearest occurrence
+                if let Some(pos) = haystack[current_end..].find(lit) {
+                    current_end = current_end + pos + lit.len();
+                } else {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+
+        // If the last part is a brace block gap, consume it
+        if valid {
+            if let Some(EllipsisPart::Gap(EllipsisGap::BraceBlock)) = parts.last() {
+                if let Some(after_brace) = find_matching_brace(haystack, current_end) {
+                    current_end = after_brace;
+                } else {
+                    valid = false;
+                }
             }
         }
 
@@ -878,6 +982,71 @@ fn find_with_ellipsis(haystack: &str, segments: &[String]) -> Vec<(usize, usize)
     }
 
     results
+}
+
+/// File-level edit: find `old_string` anywhere in the source and replace it.
+/// Supports ellipsis wildcards and fuzzy matching.
+pub fn edit_file(
+    source: &str,
+    old_string: &str,
+    new_string: &str,
+) -> Result<String, String> {
+    // Exact match
+    let matches: Vec<usize> = source
+        .match_indices(old_string)
+        .map(|(pos, _)| pos)
+        .collect();
+
+    if matches.len() > 1 {
+        return Err(format!(
+            "old_string is ambiguous: found {} matches in file. Provide more context.",
+            matches.len()
+        ));
+    }
+
+    if matches.len() == 1 {
+        let pos = matches[0];
+        return Ok(format!(
+            "{}{}{}",
+            &source[..pos],
+            new_string,
+            &source[pos + old_string.len()..]
+        ));
+    }
+
+    // Ellipsis wildcard matching
+    if let Some(segments) = split_on_ellipsis(old_string) {
+        let matches = find_with_ellipsis(source, &segments);
+        if matches.len() == 1 {
+            let (start, end) = matches[0];
+            return Ok(format!(
+                "{}{}{}",
+                &source[..start],
+                new_string,
+                &source[end..]
+            ));
+        } else if matches.len() > 1 {
+            return Err(format!(
+                "Ellipsis pattern is ambiguous: found {} matches in file. Provide more context.",
+                matches.len()
+            ));
+        }
+    }
+
+    // Fuzzy matching (only for substantial old_strings)
+    let max_total = 10;
+    if old_string.len() >= 150 {
+        if let Some((offset, matched_len, _dist)) = fuzzy_find(source, old_string, max_total) {
+            return Ok(format!(
+                "{}{}{}",
+                &source[..offset],
+                new_string,
+                &source[offset + matched_len..]
+            ));
+        }
+    }
+
+    Err("old_string not found in file (no exact, ellipsis, or fuzzy match)".to_string())
 }
 
 /// Scoped edit: find `old_string` within the function's source text and replace it.

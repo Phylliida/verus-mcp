@@ -2864,21 +2864,16 @@ Reports import changes (added/removed use statements) after mutation.")]
                 })
             });
 
-            // If function already exists, replace it
+            // If function already exists, replace it (replace_fn uses find_fn, so only matches functions)
             if let Some(ref name) = fn_name {
-                if editor::read_fn(&source, name).is_ok() {
-                    match editor::replace_fn(&source, name, &fn_source) {
-                        Ok(new_source) => {
-                            std::fs::write(&params.file, &new_source)
-                                .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
-                            let diff = Self::uses_diff(&source, &new_source);
-                            return Ok(CallToolResult::success(vec![Content::text(format!(
-                                "Replaced existing function '{}' in {}{}",
-                                name, params.file, diff
-                            ))]));
-                        }
-                        Err(e) => return Ok(CallToolResult::success(vec![Content::text(format!("Error replacing: {}", e))])),
-                    }
+                if let Ok(new_source) = editor::replace_fn(&source, name, &fn_source) {
+                    std::fs::write(&params.file, &new_source)
+                        .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
+                    let diff = Self::uses_diff(&source, &new_source);
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Replaced existing '{}' in {}{}",
+                        name, params.file, diff
+                    ))]));
                 }
             }
 
@@ -2997,7 +2992,11 @@ Exactly one of name, use_path, or mod_name is required. Reports import changes a
 
 With name: finds old_string within that function only and replaces with new_string. old_string must appear exactly once. Supports 'Type::method' for impl methods.
 
-Without name: scoped to use statements only. Replaces old_string with new_string in the file's use declarations.
+Without name: auto-detects the containing function. If old_string spans multiple functions or isn't inside one, falls back to file-level matching.
+
+Wildcards in old_string:
+- A line with just `...` matches the smallest span of text (skips lines you don't want to type out).
+- A line with just `{ ... }` matches a full brace-balanced block (from `{` to matching `}`).
 
 Use this for surgical edits — changing a requires clause, fixing a body statement, renaming a parameter, updating imports, etc.")]
     pub async fn edit(
@@ -3042,9 +3041,24 @@ Use this for surgical edits — changing a requires clause, fixing a body statem
                     match editor::find_containing_fn(&source, &params.old_string) {
                         Ok(matches) if matches.len() == 1 => matches[0].clone(),
                         Ok(matches) if matches.is_empty() => {
-                            return Ok(CallToolResult::success(vec![Content::text(
-                                "Error: old_string not found in any function. Pass `name` to scope the edit."
-                            )]));
+                            // No function contains old_string — try file-level edit
+                            // (handles multi-function edits and ellipsis patterns)
+                            match editor::edit_file(&source, &params.old_string, &params.new_string) {
+                                Ok(new_source) => {
+                                    std::fs::write(&params.file, &new_source)
+                                        .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
+                                    let diff = Self::uses_diff(&source, &new_source);
+                                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                                        "Edited {}{}",
+                                        params.file, diff
+                                    ))]));
+                                }
+                                Err(e) => {
+                                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                                        "Error: {}", e
+                                    ))]));
+                                }
+                            }
                         }
                         Ok(matches) => {
                             return Ok(CallToolResult::success(vec![Content::text(format!(
