@@ -457,7 +457,11 @@ impl VerusMcpServer {
     }
 
     /// Check if a context is active. Returns a gate message if not.
+    /// In standalone mode, always returns None (no context required).
     fn require_context(&self) -> Option<String> {
+        if crate::STANDALONE.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
         let ctx = self.context.lock().unwrap();
         if ctx.active.is_some() { return None; }
 
@@ -478,7 +482,9 @@ impl VerusMcpServer {
 
     /// Capture item names into the active context (no-op if no context active).
     /// Duplicates are moved to the end (most recently fetched last).
+    /// In standalone mode, this is a complete no-op.
     fn capture_names(&self, names: impl IntoIterator<Item = impl AsRef<str>>) {
+        if crate::STANDALONE.load(std::sync::atomic::Ordering::Relaxed) { return; }
         let mut ctx = self.context.lock().unwrap();
         if ctx.active.is_none() { return; }
         let mut changed = false;
@@ -511,6 +517,11 @@ impl VerusMcpServer {
     pub async fn context_list(
         &self,
     ) -> Result<CallToolResult, McpError> {
+        if crate::STANDALONE.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "Context management is not available in standalone mode. All tools work directly without activating a context."
+            )]));
+        }
         let recent = list_contexts();
         let ctx_guard = self.context.lock().unwrap();
         let active_info = match &ctx_guard.active {
@@ -547,6 +558,11 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ContextActivateParams>,
     ) -> Result<CallToolResult, McpError> {
+        if crate::STANDALONE.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "Context management is not available in standalone mode. All tools work directly without activating a context."
+            )]));
+        }
         // Gate: must call context_list first
         {
             let ctx = self.context.lock().unwrap();

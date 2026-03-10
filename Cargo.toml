@@ -3,6 +3,14 @@ name = "verus-mcp"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "verus-mcp"
+path = "src/main.rs"
+
+[[bin]]
+name = "verus-mcp-standalone"
+path = "src/main_standalone.rs"
+
 [dependencies]
 rmcp = { version = "1", features = ["server", "transport-io", "macros"] }
 tokio = { version = "1", features = ["full"] }

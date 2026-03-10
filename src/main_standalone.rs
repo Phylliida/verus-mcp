@@ -1,3 +1,6 @@
+// Standalone entry point — disables context management so all tools work
+// without calling context_activate first.
+
 mod index;
 mod indexer;
 mod parser;
@@ -5,7 +8,7 @@ mod server;
 mod types;
 mod watcher;
 
-pub static STANDALONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static STANDALONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 use anyhow::Result;
 use rmcp::{ServiceExt, transport::stdio};
@@ -15,7 +18,6 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Log to stderr so stdout stays clean for MCP JSON-RPC
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()),
@@ -24,15 +26,12 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
-    // Start with empty index so the MCP server can accept connections immediately.
-    // Tools will wait on `ready_rx` before accessing the index.
     let shared_index = Arc::new(RwLock::new(index::Index::empty()));
     let (ready_tx, ready_rx) = watch::channel(false);
 
-    // Build initial index in the background
     let idx_for_init = shared_index.clone();
     tokio::spawn(async move {
-        tracing::info!("Building index...");
+        tracing::info!("Building index (standalone mode)...");
         let (entries, type_entries, trait_entries, impl_entries, file_cache) =
             tokio::task::spawn_blocking(indexer::build_index)
                 .await
@@ -52,7 +51,6 @@ async fn main() -> Result<()> {
         let _ = ready_tx.send(true);
     });
 
-    // Spawn file watcher for auto-reindex
     let roots = indexer::resolve_roots();
     tokio::spawn(watcher::watch_and_reindex(shared_index.clone(), roots));
 
