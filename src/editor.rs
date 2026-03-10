@@ -630,12 +630,90 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
     Ok(output.join("\n"))
 }
 
-/// Return the source text of a function by name.
+/// Format a trait/impl block with method stubs (signatures + `...` for bodies).
+fn format_block_summary(source: &str, signature: &str, methods: &[LocatedFn]) -> String {
+    let mut lines = vec![format!("{} {{", signature)];
+    for m in methods {
+        let has_body = source[m.start_byte..m.end_byte].trim_end().ends_with('}');
+        if has_body {
+            lines.push(format!("    {} {{ ... }}", m.signature));
+        } else {
+            lines.push(format!("    {}", m.signature));
+        }
+    }
+    lines.push("}".to_string());
+    if !methods.is_empty() {
+        lines.push(String::new());
+        lines.push("Use `read` with a method name to see its full source.".to_string());
+    }
+    lines.join("\n")
+}
+
+/// Return the source text of a named item (function, trait, impl, type).
+/// Searches functions first, then traits, impls, and types.
 /// Supports qualified names like "Type::method".
 pub fn read_fn(source: &str, name: &str) -> Result<String, String> {
     let items = parse_file(source)?;
-    let found = find_fn(&items, name)?;
-    Ok(source[found.start_byte..found.end_byte].to_string())
+
+    // Try functions first
+    if let Ok(found) = find_fn(&items, name) {
+        return Ok(source[found.start_byte..found.end_byte].to_string());
+    }
+
+    let name_stripped = strip_generics(name);
+
+    // Try traits — show signature + method stubs
+    for t in &items.traits {
+        if t.name == name || strip_generics(&t.name) == name_stripped {
+            return Ok(format_block_summary(source, &t.signature, &t.methods));
+        }
+    }
+
+    // Try impls — show signature + method stubs
+    for im in &items.impls {
+        let label = if let Some(ref tr) = im.trait_name {
+            format!("{} for {}", tr, im.type_name)
+        } else {
+            im.type_name.clone()
+        };
+        if im.type_name == name
+            || label == name
+            || strip_generics(&im.type_name) == name_stripped
+            || strip_generics(&label) == name_stripped
+        {
+            return Ok(format_block_summary(source, &im.signature, &im.methods));
+        }
+    }
+
+    // Try types (struct, enum, type alias)
+    for ty in &items.types {
+        if ty.name == name || strip_generics(&ty.name) == name_stripped {
+            return Ok(source[ty.start_byte..ty.end_byte].to_string());
+        }
+    }
+
+    // Nothing found — build combined list
+    let mut available: Vec<&str> = items.functions.iter().map(|f| f.qualified_name.as_str()).collect();
+    available.extend(items.traits.iter().map(|t| t.name.as_str()));
+    available.extend(items.impls.iter().map(|im| im.type_name.as_str()));
+    available.extend(items.types.iter().map(|ty| ty.name.as_str()));
+    Err(format!(
+        "Item '{}' not found. Available: {}",
+        name,
+        if available.is_empty() { "(none)".to_string() } else { available.join(", ") }
+    ))
+}
+
+/// Find which function(s) contain a given substring. Returns qualified names.
+pub fn find_containing_fn(source: &str, needle: &str) -> Result<Vec<String>, String> {
+    let items = parse_file(source)?;
+    let matches: Vec<String> = items
+        .functions
+        .iter()
+        .filter(|f| source[f.start_byte..f.end_byte].contains(needle))
+        .map(|f| f.qualified_name.clone())
+        .collect();
+    Ok(matches)
 }
 
 /// Scoped edit: find `old_string` within the function's source text and replace it.

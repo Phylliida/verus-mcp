@@ -2774,6 +2774,32 @@ Reports import changes (added/removed use statements) after mutation.")]
             };
             let source = std::fs::read_to_string(&params.file)
                 .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
+
+            // Extract function name to check for existing
+            let fn_name: Option<String> = params.spec.name.clone().or_else(|| {
+                editor::parse_file(&fn_source).ok().and_then(|items| {
+                    items.functions.first().map(|f| f.qualified_name.clone())
+                })
+            });
+
+            // If function already exists, replace it
+            if let Some(ref name) = fn_name {
+                if editor::read_fn(&source, name).is_ok() {
+                    match editor::replace_fn(&source, name, &fn_source) {
+                        Ok(new_source) => {
+                            std::fs::write(&params.file, &new_source)
+                                .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
+                            let diff = Self::uses_diff(&source, &new_source);
+                            return Ok(CallToolResult::success(vec![Content::text(format!(
+                                "Replaced existing function '{}' in {}{}",
+                                name, params.file, diff
+                            ))]));
+                        }
+                        Err(e) => return Ok(CallToolResult::success(vec![Content::text(format!("Error replacing: {}", e))])),
+                    }
+                }
+            }
+
             let result = if let Some(ref inside) = params.inside {
                 editor::add_fn_inside(&source, &fn_source, inside, params.after.as_deref())
             } else {
@@ -2926,20 +2952,49 @@ Use this for surgical edits — changing a requires clause, fixing a body statem
                 params.file, diff
             ))]))
         } else {
-            let name = match params.name {
-                Some(ref n) if !n.is_empty() => n.as_str(),
-                _ => return Ok(CallToolResult::success(vec![Content::text(
-                    "Error: `name` is required and must not be null/empty. Pass the function name (e.g. \"my_function\" or \"Type::method\") to scope the edit."
-                )])),
+            let name: String = match params.name {
+                Some(ref n) if !n.is_empty() => n.clone(),
+                _ => {
+                    // Auto-detect: find which function contains old_string
+                    match editor::find_containing_fn(&source, &params.old_string) {
+                        Ok(matches) if matches.len() == 1 => matches[0].clone(),
+                        Ok(matches) if matches.is_empty() => {
+                            return Ok(CallToolResult::success(vec![Content::text(
+                                "Error: old_string not found in any function. Pass `name` to scope the edit."
+                            )]));
+                        }
+                        Ok(matches) => {
+                            return Ok(CallToolResult::success(vec![Content::text(format!(
+                                "Error: old_string found in {} functions. Pass `name` to disambiguate: {}",
+                                matches.len(),
+                                matches.join(", ")
+                            ))]));
+                        }
+                        Err(e) => {
+                            return Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))]));
+                        }
+                    }
+                }
             };
+            let name = name.as_str();
             match editor::edit_fn(&source, name, &params.old_string, &params.new_string) {
                 Ok(new_source) => {
                     std::fs::write(&params.file, &new_source)
                         .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
                     let diff = Self::uses_diff(&source, &new_source);
+                    // Extract edited function source + start line for UI context
+                    let fn_context = editor::read_fn(&new_source, name)
+                        .ok()
+                        .and_then(|fn_src| {
+                            // Find the start line (1-indexed)
+                            let byte_offset = new_source.find(fn_src.lines().next().unwrap_or(""))?;
+                            let start_line = new_source[..byte_offset].matches('\n').count() + 1;
+                            Some(format!("\n@@fn_start={}\n{}\n@@fn_end", start_line, fn_src))
+                        })
+                        .unwrap_or_default();
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Edited function '{}' in {}{}",
-                        name, params.file, diff
+                        "Edited function '{}' in {}{}{}",
+                        name, params.file, diff, fn_context
                     ))]))
                 }
                 Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
