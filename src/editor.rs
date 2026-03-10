@@ -614,7 +614,10 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
         }
 
         if in_verus_group {
-            output.push(format!("    {}", text));
+            // Indent every line of multi-line entries (e.g. impl blocks)
+            for line in text.lines() {
+                output.push(format!("    {}", line));
+            }
         } else {
             output.push(text.clone());
         }
