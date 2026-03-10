@@ -174,7 +174,7 @@ pub struct FindParams {
 
 /// Structured function definition. Provide EITHER `source` (raw source code)
 /// OR the structured fields (name, kind, params, body, etc.) — not both.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct FnSpec {
     /// Raw source code of the function. If provided, all other fields are ignored.
     pub source: Option<String>,
@@ -439,9 +439,91 @@ fn is_dependency_module_error(output: &str, target_pkg: &str) -> bool {
     false
 }
 
+/// If the body field contains a full function (with signature, requires/ensures),
+/// assemble the structured fields into a signature and wrap the body to form a
+/// complete function, then parse with tree-sitter. If it parses as a valid function,
+/// use it as raw source. This handles models that dump everything into the body field.
+fn normalize_fn_spec(spec: &FnSpec) -> FnSpec {
+    let body = match spec.body {
+        Some(ref b) => b,
+        None => return spec.clone(),
+    };
+
+    // Quick check: does the body contain function-like keywords at the start?
+    let trimmed = body.trim_start();
+    let has_fn_sig = trimmed.contains("fn ");
+    let has_clauses = trimmed.starts_with("requires") || trimmed.starts_with("ensures");
+
+    if !has_fn_sig && !has_clauses {
+        return spec.clone();
+    }
+
+    // Strategy: assemble a candidate function from the structured fields + body,
+    // wrapping body in verus! { } so tree-sitter can parse it.
+    // If body contains a full function, try parsing it directly first.
+    if has_fn_sig {
+        // Body might be an entire function definition — try parsing it directly
+        let candidate = format!("verus! {{\n{}\n}}", body);
+        if let Ok(items) = editor::parse_file(&candidate) {
+            if !items.functions.is_empty() {
+                let f = &items.functions[0];
+                let parsed_source = candidate[f.start_byte..f.end_byte].to_string();
+                let mut normalized = spec.clone();
+                normalized.source = Some(parsed_source);
+                normalized.body = None;
+                return normalized;
+            }
+        }
+    }
+
+    // Body starts with requires/ensures but no fn signature —
+    // build the signature from structured fields, prepend it, then parse
+    if has_clauses {
+        let mut sig = String::new();
+        if let Some(ref vis) = spec.visibility {
+            sig.push_str(vis);
+            sig.push(' ');
+        }
+        if spec.open {
+            sig.push_str("open ");
+        }
+        if let Some(ref kind) = spec.kind {
+            sig.push_str(kind);
+            sig.push_str(" fn ");
+        } else {
+            sig.push_str("fn ");
+        }
+        sig.push_str(spec.name.as_deref().unwrap_or("__placeholder"));
+        if let Some(ref tp) = spec.type_params {
+            sig.push_str(tp);
+        }
+        sig.push_str(spec.params.as_deref().unwrap_or("()"));
+        if let Some(ref ret) = spec.return_type {
+            sig.push_str(" -> ");
+            sig.push_str(ret);
+        }
+        // Body has requires/ensures — check if it also has a { } block at the end
+        let candidate = format!("verus! {{\n{}\n{}\n}}", sig, body);
+        if let Ok(items) = editor::parse_file(&candidate) {
+            if !items.functions.is_empty() {
+                let f = &items.functions[0];
+                let parsed_source = candidate[f.start_byte..f.end_byte].to_string();
+                let mut normalized = spec.clone();
+                normalized.source = Some(parsed_source);
+                normalized.body = None;
+                return normalized;
+            }
+        }
+    }
+
+    spec.clone()
+}
+
 /// Assemble function source code from a FnSpec. Returns the raw `source` if
 /// provided, otherwise builds it from structured fields.
 fn assemble_fn(spec: &FnSpec) -> Result<String, String> {
+    let spec = &normalize_fn_spec(spec);
+
     // Raw source shortcut
     if let Some(ref src) = spec.source {
         return Ok(src.clone());
@@ -2810,9 +2892,10 @@ Reports import changes (added/removed use statements) after mutation.")]
                     std::fs::write(&params.file, &new_source)
                         .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
                     let diff = Self::uses_diff(&source, &new_source);
+                    let label = fn_name.as_deref().unwrap_or("function");
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Added function to {}{}",
-                        params.file, diff
+                        "Added '{}' to {}{}",
+                        label, params.file, diff
                     ))]))
                 }
                 Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),

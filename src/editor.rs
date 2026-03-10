@@ -627,7 +627,12 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
         output.push("}".to_string());
     }
 
-    Ok(output.join("\n"))
+    let result = output.join("\n");
+    if result.contains("{ ... }") {
+        Ok(format!("{}\n\n// {{ ... }} = body hidden. Use `read` with `name` to view a specific function.", result))
+    } else {
+        Ok(result)
+    }
 }
 
 /// Format a trait/impl block with method stubs (signatures + `...` for bodies).
@@ -642,9 +647,9 @@ fn format_block_summary(source: &str, signature: &str, methods: &[LocatedFn]) ->
         }
     }
     lines.push("}".to_string());
-    if !methods.is_empty() {
+    if methods.iter().any(|m| source[m.start_byte..m.end_byte].trim_end().ends_with('}')) {
         lines.push(String::new());
-        lines.push("Use `read` with a method name to see its full source.".to_string());
+        lines.push("// { ... } = body hidden. Use `read` with method name to view full source.".to_string());
     }
     lines.join("\n")
 }
@@ -716,7 +721,167 @@ pub fn find_containing_fn(source: &str, needle: &str) -> Result<Vec<String>, Str
     Ok(matches)
 }
 
+/// Levenshtein edit distance between two strings.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let m = a_bytes.len();
+    let n = b_bytes.len();
+    let mut prev = (0..=n).collect::<Vec<_>>();
+    let mut curr = vec![0; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a_bytes[i - 1] == b_bytes[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
+/// Per-line edit distance: sum of edit distances between corresponding lines,
+/// plus a large penalty per added/removed line. Returns None if over max_total.
+fn line_level_distance(needle_lines: &[&str], candidate_lines: &[&str], max_total: usize) -> Option<usize> {
+    if needle_lines.len() != candidate_lines.len() {
+        return None; // line count must match — we don't fuzzy across line boundaries
+    }
+    let mut total = 0usize;
+    let max_per_line = 10;
+    for (n, c) in needle_lines.iter().zip(candidate_lines.iter()) {
+        let d = edit_distance(n.trim(), c.trim());
+        if d > max_per_line {
+            return None;
+        }
+        total += d;
+        if total > max_total {
+            return None;
+        }
+    }
+    Some(total)
+}
+
+/// Try to fuzzy-match `needle` (multi-line) against sliding windows in `haystack`.
+/// Returns (byte_offset, matched_length, distance) of unique best match, or None.
+fn fuzzy_find(haystack: &str, needle: &str, max_total: usize) -> Option<(usize, usize, usize)> {
+    let needle_lines: Vec<&str> = needle.lines().collect();
+    let n_lines = needle_lines.len();
+    if n_lines == 0 {
+        return None;
+    }
+
+    let hay_lines: Vec<&str> = haystack.lines().collect();
+    if hay_lines.len() < n_lines {
+        return None;
+    }
+
+    // Precompute byte offset of each line in haystack
+    let mut line_byte_offsets = Vec::with_capacity(hay_lines.len());
+    let mut offset = 0usize;
+    for line in &hay_lines {
+        line_byte_offsets.push(offset);
+        offset += line.len() + 1; // +1 for newline
+    }
+
+    let mut best: Option<(usize, usize, usize)> = None; // (line_idx, dist, count_at_dist)
+    let mut best_count = 0usize;
+
+    for start in 0..=(hay_lines.len() - n_lines) {
+        let window = &hay_lines[start..start + n_lines];
+        if let Some(dist) = line_level_distance(&needle_lines, window, max_total) {
+            match &best {
+                None => {
+                    best = Some((start, dist, 1));
+                    best_count = 1;
+                }
+                Some((_, best_dist, _)) => {
+                    if dist < *best_dist {
+                        best = Some((start, dist, 1));
+                        best_count = 1;
+                    } else if dist == *best_dist {
+                        best_count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    match best {
+        Some((line_idx, dist, _)) if best_count == 1 && dist > 0 => {
+            let byte_start = line_byte_offsets[line_idx];
+            let end_line = line_idx + n_lines - 1;
+            let byte_end = line_byte_offsets[end_line] + hay_lines[end_line].len();
+            // Include trailing newline if present
+            let byte_end = if byte_end < haystack.len() && haystack.as_bytes()[byte_end] == b'\n' {
+                byte_end
+            } else {
+                byte_end
+            };
+            Some((byte_start, byte_end - byte_start, dist))
+        }
+        _ => None,
+    }
+}
+
+/// Split old_string on lines whose trimmed content is exactly "..." (ellipsis wildcard).
+/// Returns None if no wildcard lines are found. Each `...` line can span multiple
+/// skipped lines in the actual source ("match the smallest string that fits").
+fn split_on_ellipsis(old_string: &str) -> Option<Vec<String>> {
+    let lines: Vec<&str> = old_string.lines().collect();
+    if !lines.iter().any(|l| l.trim() == "...") {
+        return None;
+    }
+    let mut segments = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    for line in &lines {
+        if line.trim() == "..." {
+            segments.push(current.join("\n"));
+            current.clear();
+        } else {
+            current.push(line);
+        }
+    }
+    segments.push(current.join("\n"));
+    Some(segments)
+}
+
+/// Find all (start, end) byte spans in `haystack` that match the ellipsis-segmented pattern.
+/// Each non-empty segment must appear in order; `...` gaps match the smallest text between them.
+fn find_with_ellipsis(haystack: &str, segments: &[String]) -> Vec<(usize, usize)> {
+    let non_empty: Vec<&str> = segments.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
+    if non_empty.is_empty() {
+        return vec![];
+    }
+
+    let first = non_empty[0];
+    let mut results = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(rel) = haystack[search_from..].find(first) {
+        let match_start = search_from + rel;
+        let mut current_end = match_start + first.len();
+        let mut valid = true;
+
+        for &seg in &non_empty[1..] {
+            if let Some(pos) = haystack[current_end..].find(seg) {
+                current_end = current_end + pos + seg.len();
+            } else {
+                valid = false;
+                break;
+            }
+        }
+
+        if valid {
+            results.push((match_start, current_end));
+        }
+        search_from = match_start + 1;
+    }
+
+    results
+}
+
 /// Scoped edit: find `old_string` within the function's source text and replace it.
+/// Falls back to ellipsis wildcard matching, then fuzzy line-level matching.
 pub fn edit_fn(
     source: &str,
     name: &str,
@@ -733,12 +898,6 @@ pub fn edit_fn(
         .map(|(pos, _)| pos)
         .collect();
 
-    if matches.is_empty() {
-        return Err(format!(
-            "old_string not found within function '{}'",
-            name
-        ));
-    }
     if matches.len() > 1 {
         return Err(format!(
             "old_string is ambiguous: found {} matches within function '{}'. Provide a larger snippet for uniqueness.",
@@ -747,19 +906,70 @@ pub fn edit_fn(
         ));
     }
 
-    let match_pos = matches[0];
-    let new_fn_text = format!(
-        "{}{}{}",
-        &fn_text[..match_pos],
-        new_string,
-        &fn_text[match_pos + old_string.len()..]
-    );
+    if matches.len() == 1 {
+        let match_pos = matches[0];
+        let new_fn_text = format!(
+            "{}{}{}",
+            &fn_text[..match_pos],
+            new_string,
+            &fn_text[match_pos + old_string.len()..]
+        );
+        return Ok(format!(
+            "{}{}{}",
+            &source[..found.start_byte],
+            new_fn_text,
+            &source[found.end_byte..]
+        ));
+    }
 
-    Ok(format!(
-        "{}{}{}",
-        &source[..found.start_byte],
-        new_fn_text,
-        &source[found.end_byte..]
+    // Exact match failed — try ellipsis wildcard matching
+    if let Some(segments) = split_on_ellipsis(old_string) {
+        let matches = find_with_ellipsis(fn_text, &segments);
+        if matches.len() == 1 {
+            let (start, end) = matches[0];
+            let new_fn_text = format!(
+                "{}{}{}",
+                &fn_text[..start],
+                new_string,
+                &fn_text[end..]
+            );
+            return Ok(format!(
+                "{}{}{}",
+                &source[..found.start_byte],
+                new_fn_text,
+                &source[found.end_byte..]
+            ));
+        } else if matches.len() > 1 {
+            return Err(format!(
+                "Ellipsis pattern is ambiguous: found {} matches within function '{}'. Provide more context.",
+                matches.len(), name
+            ));
+        }
+        // 0 matches — fall through to fuzzy
+    }
+
+    // Try fuzzy line-level match (only for substantial old_strings)
+    let max_total = 10;
+    if old_string.len() >= 150 {
+        if let Some((offset, matched_len, _dist)) = fuzzy_find(fn_text, old_string, max_total) {
+            let new_fn_text = format!(
+                "{}{}{}",
+                &fn_text[..offset],
+                new_string,
+                &fn_text[offset + matched_len..]
+            );
+            return Ok(format!(
+                "{}{}{}",
+                &source[..found.start_byte],
+                new_fn_text,
+                &source[found.end_byte..]
+            ));
+        }
+    }
+
+    Err(format!(
+        "old_string not found within function '{}' (no exact or fuzzy match)",
+        name
     ))
 }
 
@@ -1113,18 +1323,17 @@ fn strip_generics(s: &str) -> String {
 /// Find a function by name or qualified name. Returns an error if not found
 /// or if ambiguous.
 fn find_fn<'a>(items: &'a FileItems, name: &str) -> Result<&'a LocatedFn, String> {
-    // Normalize "impl Trait for Type::method" → "Type::method"
-    let name = if let Some(rest) = name.strip_prefix("impl ") {
-        // "impl Trait for Type::method" or "impl Type::method"
-        if let Some(after_for) = rest.split_once(" for ").map(|(_, r)| r) {
+    // Normalize "impl Trait for Type::method" or "Trait for Type::method" → "Type::method"
+    let name = {
+        let s = name.strip_prefix("impl ").unwrap_or(name);
+        if let Some(after_for) = s.split_once(" for ").map(|(_, r)| r) {
             after_for
-        } else if rest.contains("::") {
-            rest
+        } else if s != name && s.contains("::") {
+            // "impl Type::method" (no "for")
+            s
         } else {
             name
         }
-    } else {
-        name
     };
 
     let name_stripped = strip_generics(name);
@@ -1162,6 +1371,12 @@ fn find_fn<'a>(items: &'a FileItems, name: &str) -> Result<&'a LocatedFn, String
                 .collect();
             if qualified.len() == 1 {
                 return Ok(qualified[0]);
+            }
+
+            // If all matches have the same qualified name (duplicates), return the last one
+            let all_same = matches.iter().all(|f| f.qualified_name == matches[0].qualified_name);
+            if all_same {
+                return Ok(matches.last().unwrap());
             }
 
             let names: Vec<&str> = matches.iter().map(|f| f.qualified_name.as_str()).collect();
