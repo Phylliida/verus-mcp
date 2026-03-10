@@ -496,10 +496,27 @@ fn extract_orphaned_functions(
 /// Returns a formatted string with one signature per line.
 pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, String> {
     let items = parse_file(source)?;
-    let mut output = Vec::new();
 
-    // Functions (optionally filtered)
+    // Helper: check if a byte offset falls inside any verus block
+    let in_verus = |byte: usize| -> bool {
+        items.verus_blocks.iter().any(|vb| byte >= vb.body_start_byte && byte < vb.body_end_byte)
+    };
+
+    // Collect (start_byte, formatted, is_in_verus) entries
+    let mut entries: Vec<(usize, String, bool)> = Vec::new();
+
+    // Collect impl method byte ranges to skip in top-level function list
+    let impl_fn_bytes: std::collections::HashSet<usize> = items
+        .impls
+        .iter()
+        .flat_map(|im| im.methods.iter().map(|m| m.start_byte))
+        .collect();
+
+    // Functions (optionally filtered), excluding impl methods (shown under their impl)
     for f in &items.functions {
+        if impl_fn_bytes.contains(&f.start_byte) {
+            continue;
+        }
         let include = match kind_filter {
             None => true,
             Some("fn") => f.kind.is_none(),
@@ -510,11 +527,16 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
             Some(_) => true,
         };
         if include {
-            let kind_label = match f.kind {
-                Some(k) => format!("[{}] ", k),
-                None => "[fn] ".to_string(),
+            // Show signature with body placeholder: `fn foo() { ... }`
+            let has_body = f.end_byte > f.start_byte
+                && source[f.start_byte..f.end_byte].trim_end().ends_with('}');
+            let text = if has_body {
+                format!("{} {{ ... }}", f.signature)
+            } else {
+                // No body (e.g. trait method signature) — show as-is
+                f.signature.clone()
             };
-            output.push(format!("{}{}", kind_label, f.signature));
+            entries.push((f.start_byte, text, in_verus(f.start_byte)));
         }
     }
 
@@ -529,10 +551,15 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
             let include = match kind_filter {
                 None => true,
                 Some(k) => t.kind == k,
-                // already handled above
             };
             if include {
-                output.push(format!("[{}] {}", t.kind, t.signature));
+                let has_body = t.kind != "type"; // type aliases have no body
+                let text = if has_body {
+                    format!("[{}] {} {{ ... }}", t.kind, t.signature)
+                } else {
+                    format!("[{}] {}", t.kind, t.signature)
+                };
+                entries.push((t.start_byte, text, in_verus(t.start_byte)));
             }
         }
     }
@@ -540,31 +567,64 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
     // Traits
     if kind_filter.is_none() || kind_filter == Some("trait") {
         for t in &items.traits {
-            output.push(format!("[trait] {}", t.signature));
+            entries.push((t.start_byte, format!("[trait] {} {{ ... }}", t.signature), in_verus(t.start_byte)));
         }
     }
 
-    // Impls
+    // Impls — show header, then each method with signature on its own line
     if kind_filter.is_none() || kind_filter == Some("impl") {
         for im in &items.impls {
-            let methods: Vec<&str> = im.methods.iter().map(|m| m.name.as_str()).collect();
-            if methods.is_empty() {
-                output.push(format!("[impl] {}", im.signature));
+            if im.methods.is_empty() {
+                entries.push((im.start_byte, format!("{} {{ ... }}", im.signature), in_verus(im.start_byte)));
             } else {
-                output.push(format!(
-                    "[impl] {} {{ {} }}",
-                    im.signature,
-                    methods.join(", ")
-                ));
+                let mut lines = vec![format!("{} {{", im.signature)];
+                for m in &im.methods {
+                    let has_body = source[m.start_byte..m.end_byte].trim_end().ends_with('}');
+                    if has_body {
+                        lines.push(format!("    {} {{ ... }}", m.signature));
+                    } else {
+                        lines.push(format!("    {}", m.signature));
+                    }
+                }
+                lines.push("}".to_string());
+                entries.push((im.start_byte, lines.join("\n"), in_verus(im.start_byte)));
             }
         }
     }
 
-    if output.is_empty() {
-        Ok("No items found.".to_string())
-    } else {
-        Ok(output.join("\n"))
+    if entries.is_empty() {
+        return Ok("No items found.".to_string());
     }
+
+    // Sort by source position
+    entries.sort_by_key(|(byte, _, _)| *byte);
+
+    // Group items: wrap consecutive verus items in verus! { ... }
+    let mut output = Vec::new();
+    let mut in_verus_group = false;
+
+    for (_byte, text, is_verus) in &entries {
+        if *is_verus && !in_verus_group {
+            output.push("verus! {".to_string());
+            in_verus_group = true;
+        } else if !is_verus && in_verus_group {
+            output.push("}".to_string());
+            output.push(String::new());
+            in_verus_group = false;
+        }
+
+        if in_verus_group {
+            output.push(format!("    {}", text));
+        } else {
+            output.push(text.clone());
+        }
+    }
+
+    if in_verus_group {
+        output.push("}".to_string());
+    }
+
+    Ok(output.join("\n"))
 }
 
 /// Return the source text of a function by name.
@@ -808,6 +868,20 @@ pub fn remove_use(source: &str, path: &str) -> Result<String, String> {
 /// Find a function by name or qualified name. Returns an error if not found
 /// or if ambiguous.
 fn find_fn<'a>(items: &'a FileItems, name: &str) -> Result<&'a LocatedFn, String> {
+    // Normalize "impl Trait for Type::method" → "Type::method"
+    let name = if let Some(rest) = name.strip_prefix("impl ") {
+        // "impl Trait for Type::method" or "impl Type::method"
+        if let Some(after_for) = rest.split_once(" for ").map(|(_, r)| r) {
+            after_for
+        } else if rest.contains("::") {
+            rest
+        } else {
+            name
+        }
+    } else {
+        name
+    };
+
     let matches: Vec<&LocatedFn> = items
         .functions
         .iter()

@@ -3,9 +3,13 @@ use crate::index::{Index, Matcher, DEFAULT_RESULTS, MAX_RESULTS};
 use crate::indexer;
 use crate::types::FnKind;
 use rmcp::{
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
-    tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
+    handler::server::{router::tool::ToolRouter, tool::ToolCallContext, wrapper::Parameters},
+    model::{
+        CallToolRequestParams, CallToolResult, Content, Implementation, ListToolsResult,
+        PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
+    },
+    service::RequestContext,
+    tool, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
 };
 use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -242,8 +246,8 @@ pub struct RemoveParams {
 pub struct EditParams {
     /// Absolute path to the file
     pub file: String,
-    /// Function name (or "Type::method") — replacement is scoped to this function only
-    pub name: String,
+    /// Function name (or "Type::method") — replacement is scoped to this function only. Must not be null.
+    pub name: Option<String>,
     /// Exact string to find within the function (must be unique within it)
     pub old_string: String,
     /// Replacement string
@@ -868,6 +872,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -977,6 +984,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<LookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1020,6 +1030,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<LookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1071,6 +1084,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<BatchLookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1129,6 +1145,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1174,6 +1193,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1214,6 +1236,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1254,6 +1279,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1315,6 +1343,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<ClauseSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1352,6 +1383,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<LookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1392,6 +1426,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<LookupParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1426,6 +1463,9 @@ impl VerusMcpServer {
 
     #[tool(description = "List all indexed modules with their item counts.")]
     pub async fn list_modules(&self) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1467,6 +1507,9 @@ impl VerusMcpServer {
 
     #[tool(description = "Show index statistics: function counts by kind (spec/proof/exec), by crate, type/trait counts, and assume(false) proof debt.")]
     pub async fn stats(&self) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1509,6 +1552,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<SignatureSearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1569,6 +1615,9 @@ impl VerusMcpServer {
         &self,
         Parameters(params): Parameters<DependencyParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_not_standalone() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
@@ -1622,7 +1671,12 @@ impl VerusMcpServer {
         }
     }
 
-    #[tool(description = "Run Verus verification on a crate. Returns summary on success, or error diagnostics on failure. Timeout: 10 minutes.")]
+    #[tool(description = "Run Verus verification.
+
+crate_name → crate directory to verify (e.g. 'verus-geometry').
+module (optional) → verify only one module for faster iteration. Accepts file path ('src/runtime/polygon.rs') or module path ('runtime::polygon').
+
+On success: clean summary. On failure: extracted error diagnostics with function context (which function, relative line within it). Timeout: 10 minutes.")]
     pub async fn check(
         &self,
         Parameters(params): Parameters<CheckParams>,
@@ -1691,6 +1745,7 @@ impl VerusMcpServer {
     }
 
     /// Parse cargo verus output into a structured result.
+    /// Enriches error blocks with function context (which function, relative line).
     fn parse_verus_output(
         &self,
         crate_name: &str,
@@ -1701,6 +1756,12 @@ impl VerusMcpServer {
         let summary_re =
             regex::Regex::new(r"verification results::\s*(\d+) verified,\s*(\d+) errors")
                 .unwrap();
+
+        // Regex to extract file:line:col from --> lines
+        let loc_re = regex::Regex::new(r"-->\s+([^:]+):(\d+):(\d+)").unwrap();
+
+        // Try to get index for function lookups (best-effort, don't block)
+        let idx = self.index.read().ok();
 
         if let Some(caps) = summary_re.captures_iter(combined).last() {
             let verified: usize = caps[1].parse().unwrap_or(0);
@@ -1713,51 +1774,19 @@ impl VerusMcpServer {
                 ))]));
             }
 
-            // Extract error blocks
-            let mut error_blocks: Vec<String> = Vec::new();
-            let mut current_block: Vec<String> = Vec::new();
-            let mut in_error = false;
-
-            for line in combined.lines() {
-                if (line.starts_with("error:") || line.starts_with("error["))
-                    && !line.contains("Verus verification summary")
-                {
-                    if in_error && !current_block.is_empty() {
-                        error_blocks.push(current_block.join("\n"));
-                        current_block.clear();
-                    }
-                    in_error = true;
-                    current_block.push(line.to_string());
-                } else if in_error {
-                    let trimmed = line.trim_start();
-                    if trimmed.is_empty() {
-                        error_blocks.push(current_block.join("\n"));
-                        current_block.clear();
-                        in_error = false;
-                    } else if trimmed.starts_with('|')
-                        || trimmed.starts_with("-->")
-                        || trimmed.starts_with("note:")
-                        || trimmed.starts_with("help:")
-                        || trimmed.starts_with("=")
-                        || line.starts_with(' ')
-                    {
-                        current_block.push(line.to_string());
-                    } else {
-                        error_blocks.push(current_block.join("\n"));
-                        current_block.clear();
-                        in_error = false;
-                    }
-                }
+            let error_blocks = Self::extract_error_blocks(combined);
+            if error_blocks.is_empty() {
+                // Failed to parse error blocks — return raw output
+                let mut text = format!("{}{}", note_prefix, combined);
+                text.push_str(&format!(
+                    "\n\n{}: {} verified, {} errors",
+                    crate_name, verified, errors
+                ));
+                return Ok(CallToolResult::success(vec![Content::text(text)]));
             }
-            if !current_block.is_empty() {
-                error_blocks.push(current_block.join("\n"));
-            }
+            let annotated = self.annotate_errors(&error_blocks, &loc_re, idx.as_deref());
 
-            // Deduplicate (check.sh cats the log on error, producing duplicates)
-            let mut seen = std::collections::HashSet::new();
-            error_blocks.retain(|b| seen.insert(b.clone()));
-
-            let mut text = format!("{}{}", note_prefix, error_blocks.join("\n\n"));
+            let mut text = format!("{}{}", note_prefix, annotated.join("\n\n"));
             text.push_str(&format!(
                 "\n\n{}: {} verified, {} errors",
                 crate_name, verified, errors
@@ -1765,7 +1794,18 @@ impl VerusMcpServer {
             return Ok(CallToolResult::success(vec![Content::text(text)]));
         }
 
-        // No summary found — likely a build error. Return last 50 lines.
+        // No summary found — likely a build error.
+        let error_blocks = Self::extract_error_blocks(combined);
+        if !error_blocks.is_empty() {
+            let annotated = self.annotate_errors(&error_blocks, &loc_re, idx.as_deref());
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "{}No verification summary found (build error?)\n\n{}",
+                note_prefix,
+                annotated.join("\n\n")
+            ))]));
+        }
+
+        // Fallback: last 50 lines
         let lines: Vec<&str> = combined.lines().collect();
         let start = lines.len().saturating_sub(50);
         let tail = lines[start..].join("\n");
@@ -1775,7 +1815,179 @@ impl VerusMcpServer {
         ))]))
     }
 
-    #[tool(description = "Profile Verus verification: per-function SMT time and rlimit breakdown. Returns sorted table of hottest functions and per-module summary. Timeout: 10 minutes.")]
+    /// Extract error blocks from compiler output.
+    fn extract_error_blocks(combined: &str) -> Vec<String> {
+        let mut error_blocks: Vec<String> = Vec::new();
+        let mut current_block: Vec<String> = Vec::new();
+        let mut in_error = false;
+
+        for line in combined.lines() {
+            if (line.starts_with("error:") || line.starts_with("error["))
+                && !line.contains("Verus verification summary")
+            {
+                if in_error && !current_block.is_empty() {
+                    error_blocks.push(current_block.join("\n"));
+                    current_block.clear();
+                }
+                in_error = true;
+                current_block.push(line.to_string());
+            } else if in_error {
+                let trimmed = line.trim_start();
+                if trimmed.is_empty() {
+                    error_blocks.push(current_block.join("\n"));
+                    current_block.clear();
+                    in_error = false;
+                } else if trimmed.starts_with('|')
+                    || trimmed.starts_with("-->")
+                    || trimmed.starts_with("note:")
+                    || trimmed.starts_with("help:")
+                    || trimmed.starts_with("=")
+                    || line.starts_with(' ')
+                {
+                    current_block.push(line.to_string());
+                } else {
+                    error_blocks.push(current_block.join("\n"));
+                    current_block.clear();
+                    in_error = false;
+                }
+            }
+        }
+        if !current_block.is_empty() {
+            error_blocks.push(current_block.join("\n"));
+        }
+
+        // Deduplicate (check.sh cats the log on error, producing duplicates)
+        let mut seen = std::collections::HashSet::new();
+        error_blocks.retain(|b| seen.insert(b.clone()));
+        error_blocks
+    }
+
+    /// Annotate error blocks with function context: show signature, surrounding
+    /// source lines around the error, and inline error message.
+    fn annotate_errors(
+        &self,
+        blocks: &[String],
+        loc_re: &regex::Regex,
+        idx: Option<&Index>,
+    ) -> Vec<String> {
+        // Cache file contents to avoid re-reading
+        let mut file_cache: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+
+        blocks
+            .iter()
+            .map(|block| {
+                let Some(caps) = loc_re.captures(block) else {
+                    return block.clone();
+                };
+                let file = caps.get(1).unwrap().as_str();
+                let err_line: usize = caps[2].parse().unwrap_or(0);
+                let Some(idx) = idx else {
+                    return block.clone();
+                };
+                let Some(entry) = idx.fn_at_line(file, err_line) else {
+                    return block.clone();
+                };
+
+                // Extract the error message (first line of block)
+                let err_msg = block.lines().next().unwrap_or("error");
+
+                // Read file (cached)
+                let lines = file_cache
+                    .entry(entry.file_path.clone())
+                    .or_insert_with(|| {
+                        std::fs::read_to_string(&entry.file_path)
+                            .unwrap_or_default()
+                            .lines()
+                            .map(|l| l.to_string())
+                            .collect()
+                    });
+
+                if lines.is_empty() {
+                    return block.clone();
+                }
+
+                // fn lines are 1-indexed
+                let fn_start = entry.line.saturating_sub(1); // to 0-indexed
+                let fn_end = entry.end_line.min(lines.len()); // 1-indexed end, exclusive in slice
+                let err_idx = err_line.saturating_sub(1); // 0-indexed
+                let fn_len = fn_end.saturating_sub(fn_start);
+
+                let mut out = Vec::new();
+
+                if fn_len <= 100 {
+                    // Short function: show entire source with error inlined
+                    for i in fn_start..fn_end {
+                        out.push(lines[i].clone());
+                        if i == err_idx {
+                            let indent = lines[i].len() - lines[i].trim_start().len();
+                            out.push(format!(
+                                "{}// ^^^ {}",
+                                " ".repeat(indent),
+                                err_msg
+                            ));
+                        }
+                    }
+                } else {
+                    // Long function: show signature + context around error
+
+                    // Find where the body starts (first `{` line)
+                    let mut body_start = fn_start;
+                    for i in fn_start..fn_end {
+                        if lines[i].contains('{') {
+                            body_start = i;
+                            break;
+                        }
+                    }
+
+                    let ctx = 3usize;
+                    let ctx_start = err_idx.saturating_sub(ctx).max(body_start + 1);
+                    let ctx_end = (err_idx + ctx + 1).min(fn_end);
+
+                    // Signature up to `{` line
+                    for i in fn_start..=body_start.min(fn_end.saturating_sub(1)) {
+                        out.push(lines[i].clone());
+                    }
+
+                    if ctx_start > body_start + 1 {
+                        out.push("    ...".to_string());
+                    }
+
+                    for i in ctx_start..ctx_end {
+                        out.push(lines[i].clone());
+                        if i == err_idx {
+                            let indent = lines[i].len() - lines[i].trim_start().len();
+                            out.push(format!(
+                                "{}// ^^^ {}",
+                                " ".repeat(indent),
+                                err_msg
+                            ));
+                        }
+                    }
+
+                    if ctx_end < fn_end.saturating_sub(1) {
+                        out.push("    ...".to_string());
+                    }
+
+                    if fn_end > 0 && fn_end - 1 >= ctx_end {
+                        out.push(lines[fn_end - 1].clone());
+                    }
+                }
+
+                out.join("\n")
+            })
+            .collect()
+    }
+
+    #[tool(description = "Profile Verus verification performance.
+
+Returns per-function SMT time and rlimit breakdown sorted by cost. Use rlimit (deterministic) not SMT time (high variance) to measure optimization impact.
+
+crate_name → crate directory to profile.
+module (optional) → profile only one module.
+top_n (optional) → number of top functions to show (default 25).
+
+Timeout: 10 minutes.")]
     pub async fn profile(
         &self,
         Parameters(params): Parameters<ProfileParams>,
@@ -1945,7 +2157,7 @@ PYEOF
         Ok(CallToolResult::success(vec![Content::text(stdout.to_string())]))
     }
 
-    #[tool(description = "Rebuild the index from disk. Use after editing Verus source files. Only re-parses files that changed since the last index.")]
+    #[tool(description = "Force rebuild the proof index from disk. Only re-parses files that changed since the last index. Not normally needed — the server auto-reindexes when .rs files change (500ms debounce). Use after external edits or if the index seems stale.")]
     pub async fn reindex(&self) -> Result<CallToolResult, McpError> {
         if let Some(msg) = self.require_context() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
@@ -1988,6 +2200,15 @@ PYEOF
         }
     }
 
+    /// Gate: block individual search tools in standalone mode (use unified `find` instead).
+    fn require_not_standalone(&self) -> Option<String> {
+        if crate::STANDALONE.load(std::sync::atomic::Ordering::Relaxed) {
+            Some("In standalone mode, use the unified `find` tool instead.".into())
+        } else {
+            None
+        }
+    }
+
     /// Compare use statements before/after a mutation and report only changes.
     fn uses_diff(before: &str, after: &str) -> String {
         let extract = |src: &str| -> std::collections::BTreeSet<String> {
@@ -2014,7 +2235,28 @@ PYEOF
         }
     }
 
-    #[tool(description = "Unified search tool. Default (no scope): name substring search (query) or exact lookup (name) or batch lookup (names). Scopes: 'ensures'/'requires'/'body'/'doc' search clause/body/doc content; 'types' search structs/enums; 'signature' search by param_type/return_type/type_bound; 'trait' find trait+impls; 'module' browse module; 'modules' list all; 'dependencies' callers/callees; 'stats' index stats; 'source' full function source.")]
+    #[tool(description = "Search the Verus proof index across all crates.
+
+No scope (default):
+  query → fuzzy name search (substring + fuzzy fallback). Set details=true for full signatures.
+  name → exact lookup of a function or type (full signature with requires/ensures).
+  names → batch exact lookup (max 10).
+
+Scopes:
+  ensures — search ensures clauses (regex, e.g. 'div.*mul'). Finds lemmas that prove a property.
+  requires — search requires clauses (regex). Finds what preconditions a lemma needs.
+  body — search function bodies (regex). Finds where a lemma is called.
+  doc — search doc comments (regex). Searches both functions and types.
+  types — search structs/enums/type aliases by name substring.
+  signature — search by type signature. Set param_type, return_type, and/or type_bound.
+  trait — show trait definition + all implementors. Requires name.
+  module — list all items in a module. Requires query (module path like 'verus_topology::mesh').
+  modules — list all indexed modules grouped by crate.
+  dependencies — call graph. Requires name. Set direction='callers' (default) or 'callees'.
+  stats — index statistics (counts by kind, by crate, proof debt).
+  source — full source code of a function. Requires name.
+
+Filters (work with most scopes): kind, crate_name, module, limit, offset.")]
     pub async fn find(
         &self,
         Parameters(params): Parameters<FindParams>,
@@ -2022,154 +2264,299 @@ PYEOF
         if let Some(msg) = self.require_standalone() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
+        self.wait_ready().await;
+        let idx = self.index.read().map_err(|e| {
+            McpError::internal_error(format!("Lock error: {}", e), None)
+        })?;
+
+        let ok = |text: String| -> Result<CallToolResult, McpError> {
+            Ok(CallToolResult::success(vec![Content::text(text)]))
+        };
+        let limit = params.limit.map(|l| l.min(MAX_RESULTS)).unwrap_or(MAX_RESULTS);
+        let offset = params.offset.unwrap_or(0);
+        let kind = params.kind.as_deref().and_then(parse_kind);
 
         match params.scope.as_deref() {
-            Some("ensures") | Some("requires") | Some("body") => {
-                let query = match params.query.or(params.name.clone()) {
-                    Some(q) => q,
-                    None => return Ok(CallToolResult::success(vec![Content::text(
-                        "Error: query is required for clause/body search.".to_string(),
-                    )])),
+            Some(scope @ "ensures") | Some(scope @ "requires") | Some(scope @ "body") => {
+                let query = params.query.or(params.name.clone())
+                    .ok_or_else(|| McpError::invalid_params(format!("query is required for {} search", scope), None))?;
+                let result = match scope {
+                    "ensures" => idx.search_ensures(&query, params.crate_name.as_deref(), params.module.as_deref(), params.name.as_deref(), kind, offset, limit),
+                    "requires" => idx.search_requires(&query, params.crate_name.as_deref(), params.module.as_deref(), params.name.as_deref(), kind, offset, limit),
+                    _ => idx.search_body(&query, params.crate_name.as_deref(), params.module.as_deref(), params.name.as_deref(), kind, offset, limit),
                 };
-                let cp = ClauseSearchParams {
-                    query,
-                    crate_name: params.crate_name,
-                    module: params.module,
-                    name: params.name,
-                    kind: params.kind,
-                    limit: params.limit,
-                    offset: params.offset,
-                };
-                match params.scope.as_deref().unwrap() {
-                    "ensures" => self.search_ensures(Parameters(cp)).await,
-                    "requires" => self.search_requires(Parameters(cp)).await,
-                    _ => self.search_body(Parameters(cp)).await,
+                if result.items.is_empty() {
+                    return ok(format!("No {} matching '{}'", scope, query));
                 }
+                let matcher = Matcher::new(&query);
+                let text: String = result.items.iter().map(|e| {
+                    match scope {
+                        "ensures" => e.format_clause_match(&e.ensures, &|s| matcher.find_pos(s)),
+                        "requires" => e.format_clause_match(&e.requires, &|s| matcher.find_pos(s)),
+                        _ => e.format_body_match(&|s| matcher.find_pos(s)),
+                    }
+                }).collect::<Vec<_>>().join("\n");
+                let count = format_count(result.items.len(), result.total_count, offset);
+                ok(format!("{}:\n\n{}", count, text))
             }
             Some("doc") => {
-                let query = match params.query.or(params.name.clone()) {
-                    Some(q) => q,
-                    None => return Ok(CallToolResult::success(vec![Content::text(
-                        "Error: query is required for doc search.".to_string(),
-                    )])),
-                };
-                self.search_doc(Parameters(ClauseSearchParams {
-                    query,
-                    crate_name: params.crate_name,
-                    module: params.module,
-                    name: params.name,
-                    kind: params.kind,
-                    limit: params.limit,
-                    offset: params.offset,
-                }))
-                .await
+                let query = params.query.or(params.name.clone())
+                    .ok_or_else(|| McpError::invalid_params("query is required for doc search", None))?;
+                let fn_result = idx.search_doc(&query, params.crate_name.as_deref(), params.module.as_deref(), params.name.as_deref(), kind, offset, limit);
+                let type_result = idx.search_type_doc(&query, params.crate_name.as_deref(), params.module.as_deref(), offset, limit);
+                if fn_result.items.is_empty() && type_result.items.is_empty() {
+                    return ok(format!("No doc comments matching '{}'", query));
+                }
+                let mut parts = Vec::new();
+                if !fn_result.items.is_empty() {
+                    let text: String = fn_result.items.iter().map(|e| {
+                        let doc = e.doc_comment.as_deref().unwrap_or("");
+                        format!("[{}] {}  ({}:{})\n    {}", e.kind, e.name, e.file_path.rsplit('/').next().unwrap_or(&e.file_path), e.line, doc)
+                    }).collect::<Vec<_>>().join("\n");
+                    parts.push(format!("{} (functions):\n\n{}", format_count(fn_result.items.len(), fn_result.total_count, offset), text));
+                }
+                if !type_result.items.is_empty() {
+                    let text: String = type_result.items.iter().map(|e| {
+                        let doc = e.doc_comment.as_deref().unwrap_or("");
+                        format!("[{}] {}  ({}:{})\n    {}", e.item_kind, e.name, e.file_path.rsplit('/').next().unwrap_or(&e.file_path), e.line, doc)
+                    }).collect::<Vec<_>>().join("\n");
+                    parts.push(format!("{} (types):\n\n{}", format_count(type_result.items.len(), type_result.total_count, offset), text));
+                }
+                ok(parts.join("\n\n"))
             }
             Some("types") => {
-                let query = match params.query.or(params.name) {
-                    Some(q) => q,
-                    None => return Ok(CallToolResult::success(vec![Content::text(
-                        "Error: query is required for type search.".to_string(),
-                    )])),
-                };
-                self.search_types(Parameters(ClauseSearchParams {
-                    query,
-                    crate_name: params.crate_name,
-                    module: params.module,
-                    name: None,
-                    kind: params.kind,
-                    limit: params.limit,
-                    offset: params.offset,
-                }))
-                .await
+                let query = params.query.or(params.name)
+                    .ok_or_else(|| McpError::invalid_params("query is required for type search", None))?;
+                let result = idx.search_types(&query, params.crate_name.as_deref(), params.module.as_deref(), offset, limit);
+                if result.items.is_empty() {
+                    let mut msg = format!("No types matching '{}'", query);
+                    msg.push_str(&format_did_you_mean(&idx, &query));
+                    return ok(msg);
+                }
+                let text: String = result.items.iter().map(|e| e.format_compact()).collect::<Vec<_>>().join("\n");
+                ok(format!("{}:\n\n{}", format_count(result.items.len(), result.total_count, offset), text))
             }
             Some("signature") => {
-                self.search_signature(Parameters(SignatureSearchParams {
-                    param_type: params.param_type,
-                    return_type: params.return_type,
-                    type_bound: params.type_bound,
-                    name: params.name.or(params.query),
-                    kind: params.kind,
-                    crate_name: params.crate_name,
-                    module: params.module,
-                    limit: params.limit,
-                    offset: params.offset,
-                }))
-                .await
+                if params.param_type.is_none() && params.return_type.is_none() && params.type_bound.is_none() {
+                    return ok("Error: at least one of param_type, return_type, or type_bound required.".into());
+                }
+                let result = idx.search_signature(
+                    params.param_type.as_deref(), params.return_type.as_deref(), params.type_bound.as_deref(),
+                    params.name.as_deref().or(params.query.as_deref()), kind,
+                    params.crate_name.as_deref(), params.module.as_deref(), offset, limit,
+                );
+                if result.items.is_empty() {
+                    let mut desc = Vec::new();
+                    if let Some(ref p) = params.param_type { desc.push(format!("param_type={}", p)); }
+                    if let Some(ref r) = params.return_type { desc.push(format!("return_type={}", r)); }
+                    if let Some(ref t) = params.type_bound { desc.push(format!("type_bound={}", t)); }
+                    return ok(format!("No results for signature search: {}", desc.join(", ")));
+                }
+                let text: String = result.items.iter().map(|e| e.format_compact()).collect::<Vec<_>>().join("\n");
+                ok(format!("{}:\n\n{}", format_count(result.items.len(), result.total_count, offset), text))
             }
             Some("trait") => {
-                let name = match params.name.or(params.query) {
-                    Some(n) => n,
-                    None => return Ok(CallToolResult::success(vec![Content::text(
-                        "Error: name is required for trait search.".to_string(),
-                    )])),
-                };
-                self.search_trait(Parameters(LookupParams { name })).await
+                let name = params.name.or(params.query)
+                    .ok_or_else(|| McpError::invalid_params("name is required for trait search", None))?;
+                let traits = idx.lookup_trait(&name);
+                let impls = idx.search_trait_impls(&name);
+                if traits.is_empty() && impls.is_empty() {
+                    let mut msg = format!("No trait or impls matching '{}'", name);
+                    msg.push_str(&format_did_you_mean(&idx, &name));
+                    return ok(msg);
+                }
+                let mut text = String::new();
+                for t in &traits { text.push_str(&t.format_full()); text.push('\n'); }
+                if !impls.is_empty() {
+                    text.push_str(&format!("Implementations ({}):\n", impls.len()));
+                    for i in &impls { text.push_str(&format!("  {}\n", i.format_compact())); }
+                }
+                ok(text)
             }
             Some("module") => {
-                let name = match params.query.or(params.name) {
-                    Some(n) => n,
-                    None => return Ok(CallToolResult::success(vec![Content::text(
-                        "Error: query (module path) is required for module browsing.".to_string(),
-                    )])),
-                };
-                self.browse_module(Parameters(LookupParams { name })).await
+                let name = params.query.or(params.name)
+                    .ok_or_else(|| McpError::invalid_params("query (module path) is required", None))?;
+                let (fns, types) = idx.browse_module(&name);
+                if fns.is_empty() && types.is_empty() {
+                    return ok(format!("No items in module '{}'", name));
+                }
+                let mut text = String::new();
+                if !types.is_empty() {
+                    text.push_str(&format!("Types ({}):\n", types.len()));
+                    for t in &types { text.push_str(&format!("  {}\n", t.format_compact())); }
+                    text.push('\n');
+                }
+                if !fns.is_empty() {
+                    text.push_str(&format!("Functions ({}):\n", fns.len()));
+                    for f in &fns { text.push_str(&format!("  {}\n", f.format_compact())); }
+                }
+                ok(text)
             }
-            Some("modules") => self.list_modules().await,
-            Some("stats") => self.stats().await,
+            Some("modules") => {
+                let modules = idx.list_modules();
+                let total = idx.len() + idx.type_len();
+                let mut crates: std::collections::BTreeMap<String, Vec<(String, usize)>> = std::collections::BTreeMap::new();
+                for (path, count) in &modules {
+                    let crate_name = path.split("::").next().unwrap_or(path);
+                    let mod_name = path.splitn(2, "::").nth(1).unwrap_or("(root)");
+                    crates.entry(crate_name.to_string()).or_default().push((mod_name.to_string(), *count));
+                }
+                let mut text = format!("{} items, {} modules\n\n", total, modules.len());
+                for (cn, mods) in &crates {
+                    let ct: usize = mods.iter().map(|(_, c)| c).sum();
+                    let ml: Vec<String> = mods.iter().map(|(m, c)| format!("{}({})", m, c)).collect();
+                    text.push_str(&format!("{} ({}): {}\n", cn, ct, ml.join(", ")));
+                }
+                ok(text)
+            }
+            Some("stats") => {
+                let s = idx.stats();
+                let mut text = format!(
+                    "Total: {} functions, {} types, {} traits\nBy kind: {} spec, {} proof, {} exec\nProof debt: {} assume(false)\n",
+                    s.total_functions, s.total_types, s.total_traits, s.spec, s.proof, s.exec, s.assume_false,
+                );
+                text.push_str("\nBy crate:\n");
+                for (name, cs) in &s.by_crate {
+                    let mut parts = vec![format!("{} fns", cs.functions)];
+                    if cs.types > 0 { parts.push(format!("{} types", cs.types)); }
+                    if cs.traits > 0 { parts.push(format!("{} traits", cs.traits)); }
+                    if cs.assume_false > 0 { parts.push(format!("{} assume(false)", cs.assume_false)); }
+                    text.push_str(&format!("  {}: {}\n", name, parts.join(", ")));
+                }
+                ok(text)
+            }
             Some("source") => {
-                let name = match params.name.or(params.query) {
-                    Some(n) => n,
-                    None => return Ok(CallToolResult::success(vec![Content::text(
-                        "Error: name is required for source lookup.".to_string(),
-                    )])),
-                };
-                self.lookup_source(Parameters(LookupParams { name })).await
+                let name = params.name.or(params.query)
+                    .ok_or_else(|| McpError::invalid_params("name is required for source lookup", None))?;
+                let fn_results = idx.lookup(&name);
+                if fn_results.is_empty() {
+                    let mut msg = format!("No function named '{}'", name);
+                    msg.push_str(&format_did_you_mean(&idx, &name));
+                    return ok(msg);
+                }
+                let mut sections = Vec::new();
+                for e in &fn_results {
+                    match std::fs::read_to_string(&e.file_path) {
+                        Ok(contents) => {
+                            let lines: Vec<&str> = contents.lines().collect();
+                            let start = e.line.saturating_sub(1);
+                            let end = e.end_line.min(lines.len());
+                            sections.push(format!("// {}:{}-{}\n{}", e.file_path, e.line, e.end_line, lines[start..end].join("\n")));
+                        }
+                        Err(err) => sections.push(format!("// {}:{}-{} (could not read: {})", e.file_path, e.line, e.end_line, err)),
+                    }
+                }
+                ok(sections.join("\n---\n"))
             }
             Some("dependencies") => {
-                let name = match params.name.or(params.query) {
-                    Some(n) => n,
-                    None => return Ok(CallToolResult::success(vec![Content::text(
-                        "Error: name is required for dependency search.".to_string(),
-                    )])),
-                };
-                self.find_dependencies(Parameters(DependencyParams {
-                    name,
-                    direction: params.direction,
-                }))
-                .await
+                let name = params.name.or(params.query)
+                    .ok_or_else(|| McpError::invalid_params("name is required for dependency search", None))?;
+                let direction = params.direction.as_deref().unwrap_or("callers");
+                match direction {
+                    "callees" => {
+                        let callees = idx.find_callees(&name);
+                        if callees.is_empty() {
+                            let mut msg = format!("'{}' calls no known functions", name);
+                            msg.push_str(&format_did_you_mean(&idx, &name));
+                            return ok(msg);
+                        }
+                        let mut sorted = callees;
+                        sorted.sort();
+                        ok(format!("'{}' calls {} functions:\n\n{}", name, sorted.len(), sorted.join("\n")))
+                    }
+                    _ => {
+                        let callers = idx.find_callers(&name);
+                        if callers.is_empty() {
+                            let mut msg = format!("No callers found for '{}'", name);
+                            msg.push_str(&format_did_you_mean(&idx, &name));
+                            return ok(msg);
+                        }
+                        let text: String = callers.iter().map(|e| e.format_compact()).collect::<Vec<_>>().join("\n");
+                        ok(format!("{} callers of '{}':\n\n{}", callers.len(), name, text))
+                    }
+                }
             }
-            Some(other) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Some(other) => ok(format!(
                 "Error: unknown scope '{}'. Valid: ensures, requires, body, doc, types, signature, trait, module, modules, dependencies, stats, source.",
                 other
-            ))])),
+            )),
             None => {
                 // Default: batch lookup, exact lookup, or name search
                 if let Some(names) = params.names {
-                    self.batch_lookup(Parameters(BatchLookupParams { names })).await
+                    if names.is_empty() { return ok("No names provided".into()); }
+                    if names.len() > 10 { return ok("Max 10 names per call".into()); }
+                    let mut sections = Vec::new();
+                    for name in &names {
+                        let fn_results = idx.lookup(name);
+                        if !fn_results.is_empty() {
+                            sections.push(fn_results.iter().map(|e| e.format_full()).collect::<Vec<_>>().join("\n"));
+                            continue;
+                        }
+                        let type_results = idx.lookup_type(name);
+                        if !type_results.is_empty() {
+                            sections.push(type_results.iter().map(|e| e.format_full()).collect::<Vec<_>>().join("\n"));
+                            continue;
+                        }
+                        sections.push(format!("'{}': not found", name));
+                    }
+                    ok(sections.join("\n---\n"))
                 } else if let Some(name) = params.name {
-                    self.lookup(Parameters(LookupParams { name })).await
+                    // Exact lookup
+                    let fn_results = idx.lookup(&name);
+                    if !fn_results.is_empty() {
+                        return ok(fn_results.iter().map(|e| e.format_full()).collect::<Vec<_>>().join("\n"));
+                    }
+                    let type_results = idx.lookup_type(&name);
+                    if !type_results.is_empty() {
+                        return ok(type_results.iter().map(|e| e.format_full()).collect::<Vec<_>>().join("\n"));
+                    }
+                    let mut msg = format!("No function or type named '{}'", name);
+                    msg.push_str(&format_did_you_mean(&idx, &name));
+                    ok(msg)
                 } else if let Some(query) = params.query {
-                    self.search(Parameters(SearchParams {
-                        query,
-                        kind: params.kind,
-                        crate_name: params.crate_name,
-                        module: params.module,
-                        trait_only: params.trait_only,
-                        details: params.details,
-                        limit: params.limit,
-                        offset: params.offset,
-                    }))
-                    .await
+                    // Name substring search
+                    let det_limit = if params.details {
+                        params.limit.map(|l| l.min(MAX_RESULTS)).unwrap_or(DEFAULT_RESULTS.min(10))
+                    } else {
+                        limit
+                    };
+                    let result = idx.search(&query, kind, params.crate_name.as_deref(), params.module.as_deref(), params.trait_only, offset, det_limit);
+
+                    let mut text: String = result.items.iter()
+                        .map(|e| if params.details { e.format_full() } else { e.format_compact() })
+                        .collect::<Vec<_>>().join("\n");
+
+                    if offset == 0 && result.total_count < 5 {
+                        let fuzzy_limit = if result.items.is_empty() { 10 } else { DEFAULT_RESULTS.saturating_sub(result.items.len()) };
+                        if fuzzy_limit > 0 {
+                            let fuzzy = idx.search_fuzzy(&query, fuzzy_limit);
+                            let existing: std::collections::HashSet<(&str, usize)> = result.items.iter().map(|e| (e.file_path.as_str(), e.line)).collect();
+                            let fuzzy_new: Vec<_> = fuzzy.items.iter().filter(|e| !existing.contains(&(e.file_path.as_str(), e.line))).collect();
+                            if !fuzzy_new.is_empty() {
+                                text.push_str("\n\n--- fuzzy matches ---\n");
+                                for e in &fuzzy_new { text.push_str(&format!("{}\n", e.format_compact())); }
+                            }
+                        }
+                    }
+                    if result.items.is_empty() && text.trim().is_empty() {
+                        let mut msg = format!("No results for '{}'", query);
+                        msg.push_str(&format_did_you_mean(&idx, &query));
+                        return ok(msg);
+                    }
+                    let count = format_count(result.items.len(), result.total_count, offset);
+                    ok(format!("{}:\n\n{}", count, text))
                 } else {
-                    Ok(CallToolResult::success(vec![Content::text(
-                        "Error: provide query, name, or names (or set scope).".to_string(),
-                    )]))
+                    ok("Error: provide query, name, or names (or set scope).".into())
                 }
             }
         }
     }
 
-    #[tool(description = "Smart reader. No args or directory path → list .rs files. File path → list all items with signatures + use/mod statements. File path + name → full function source.")]
+    #[tool(description = "Read files and explore project structure.
+
+No path (or directory path) → list directory contents (files and subdirectories).
+File path, no name → list file overview: use statements, mod declarations, and all item signatures with requires/ensures (bodies shown as { ... }).
+File path + name → full source code of that function (no truncation). Supports 'Type::method' for impl methods.")]
     pub async fn read(
         &self,
         Parameters(params): Parameters<ReadParams>,
@@ -2187,20 +2574,23 @@ PYEOF
             .map_err(|e| McpError::internal_error(format!("Cannot access {}: {}", path, e), None))?;
 
         if meta.is_dir() {
-            let mut files = Vec::new();
-            for entry in walkdir::WalkDir::new(&path)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
-                if entry.path().extension().and_then(|e| e.to_str()) == Some("rs") {
-                    files.push(entry.path().display().to_string());
+            let mut entries = Vec::new();
+            let read_dir = std::fs::read_dir(&path)
+                .map_err(|e| McpError::internal_error(format!("Cannot read {}: {}", path, e), None))?;
+            for entry in read_dir.filter_map(|e| e.ok()) {
+                let ft = entry.file_type().ok();
+                let name = entry.file_name().to_string_lossy().to_string();
+                if ft.map_or(false, |ft| ft.is_dir()) {
+                    entries.push(format!("{}/", name));
+                } else {
+                    entries.push(name);
                 }
             }
-            files.sort();
-            if files.is_empty() {
-                Ok(CallToolResult::success(vec![Content::text("No .rs files found.")]))
+            entries.sort();
+            if entries.is_empty() {
+                Ok(CallToolResult::success(vec![Content::text("Empty directory.")]))
             } else {
-                Ok(CallToolResult::success(vec![Content::text(files.join("\n"))]))
+                Ok(CallToolResult::success(vec![Content::text(entries.join("\n"))]))
             }
         } else if let Some(name) = params.name {
             let source = std::fs::read_to_string(&path)
@@ -2236,7 +2626,7 @@ PYEOF
 
             // Items
             match editor::list_items(&source, None) {
-                Ok(items) if !items.is_empty() => parts.push(items),
+                Ok(items) if !items.is_empty() && items != "No items found." => parts.push(items),
                 _ => {}
             }
 
@@ -2249,7 +2639,13 @@ PYEOF
         }
     }
 
-    #[tool(description = "Add a use statement, mod declaration, or function to a file. Set use_path for imports (auto-resolves short names). Set mod_name for pub mod declarations. Otherwise provide function fields (structured or raw source).")]
+    #[tool(description = "Add an item to a Verus source file.
+
+use_path → add a use statement. Accepts full paths ('vstd::prelude::*') or short type names ('Ring') which auto-resolve from the index.
+mod_name → add a `pub mod <name>;` declaration.
+Otherwise → add a function. Provide either raw `source` or structured fields (name, kind, params, requires, ensures, body, etc.). Verus functions (spec/proof/exec) are auto-placed inside the verus! block. Set `after` to insert after a specific function.
+
+Reports import changes (added/removed use statements) after mutation.")]
     pub async fn add(
         &self,
         Parameters(params): Parameters<AddParams>,
@@ -2389,7 +2785,13 @@ PYEOF
         }
     }
 
-    #[tool(description = "Remove a function, use statement, or mod declaration from a file. Set name for functions, use_path for imports, mod_name for module declarations.")]
+    #[tool(description = "Remove an item from a Verus source file.
+
+name → remove a function (or 'Type::method' for impl methods). Also removes its doc comment.
+use_path → remove a use statement by substring match.
+mod_name → remove a `pub mod <name>;` or `mod <name>;` declaration.
+
+Exactly one of name, use_path, or mod_name is required. Reports import changes after mutation.")]
     pub async fn remove(
         &self,
         Parameters(params): Parameters<RemoveParams>,
@@ -2457,14 +2859,20 @@ PYEOF
                 mod_name
             ))]))
         } else {
+            // Check if the model likely intended to pass name but sent null
             Ok(CallToolResult::success(vec![Content::text(
-                "Error: specify name (function), use_path (import), or mod_name (module) to remove."
+                "Error: `name`, `use_path`, or `mod_name` is required but all were null/empty. \
+                 Pass a non-null value — e.g. name=\"my_function\" to remove a function."
                     .to_string(),
             )]))
         }
     }
 
-    #[tool(description = "Edit a function by scoped string replacement. Finds old_string ONLY within the named function (not the whole file), replaces with new_string. old_string must be unique within the function.")]
+    #[tool(description = "Edit a function via scoped string replacement.
+
+Finds old_string within the named function only (not the whole file) and replaces it with new_string. old_string must appear exactly once within the function. Supports 'Type::method' for impl methods.
+
+Use this for surgical edits — changing a requires clause, fixing a body statement, renaming a parameter, etc.")]
     pub async fn edit(
         &self,
         Parameters(params): Parameters<EditParams>,
@@ -2472,16 +2880,22 @@ PYEOF
         if let Some(msg) = self.require_standalone() {
             return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
+        let name = match params.name {
+            Some(ref n) if !n.is_empty() => n.as_str(),
+            _ => return Ok(CallToolResult::success(vec![Content::text(
+                "Error: `name` is required and must not be null/empty. Pass the function name (e.g. \"my_function\" or \"Type::method\") to scope the edit."
+            )])),
+        };
         let source = std::fs::read_to_string(&params.file)
             .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
-        match editor::edit_fn(&source, &params.name, &params.old_string, &params.new_string) {
+        match editor::edit_fn(&source, name, &params.old_string, &params.new_string) {
             Ok(new_source) => {
                 std::fs::write(&params.file, &new_source)
                     .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
                 let diff = Self::uses_diff(&source, &new_source);
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Edited function '{}' in {}{}",
-                    params.name, params.file, diff
+                    name, params.file, diff
                 ))]))
             }
             Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
@@ -2489,7 +2903,30 @@ PYEOF
     }
 }
 
-#[tool_handler]
+/// Tools only available in standalone mode.
+const STANDALONE_ONLY: &[&str] = &["find", "read", "add", "remove", "edit"];
+
+/// Tools hidden in standalone mode (replaced by unified tools above).
+const HIDDEN_IN_STANDALONE: &[&str] = &[
+    "search",
+    "search_ensures",
+    "search_requires",
+    "search_signature",
+    "search_body",
+    "search_doc",
+    "search_types",
+    "search_trait",
+    "browse_module",
+    "lookup",
+    "lookup_source",
+    "batch_lookup",
+    "find_dependencies",
+    "list_modules",
+    "context_list",
+    "context_activate",
+    "stats",
+];
+
 impl ServerHandler for VerusMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
@@ -2498,5 +2935,44 @@ impl ServerHandler for VerusMcpServer {
                 "Verus proof index server. Search spec/proof/exec functions, \
                  look up lemmas by name, search requires/ensures clauses.",
             )
+    }
+
+    fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
+        let standalone = crate::STANDALONE.load(std::sync::atomic::Ordering::Relaxed);
+        let tools: Vec<Tool> = self
+            .tool_router
+            .list_all()
+            .into_iter()
+            .filter(|t| {
+                let name = t.name.as_ref();
+                if standalone {
+                    !HIDDEN_IN_STANDALONE.contains(&name)
+                } else {
+                    !STANDALONE_ONLY.contains(&name)
+                }
+            })
+            .collect();
+        std::future::ready(Ok(ListToolsResult {
+            tools,
+            meta: None,
+            next_cursor: None,
+        }))
+    }
+
+    fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
+        let tcc = ToolCallContext::new(self, request, context);
+        async move { self.tool_router.call(tcc).await }
+    }
+
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        self.tool_router.get(name).cloned()
     }
 }

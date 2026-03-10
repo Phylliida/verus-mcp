@@ -993,4 +993,25 @@ impl Index {
 
         results
     }
+
+    /// Find the function containing a given file path and line number.
+    /// Returns (function_name, fn_start_line) if found.
+    pub fn fn_at_line(&self, file_path: &str, line: usize) -> Option<&FnEntry> {
+        // Normalize: error paths are relative (src/ring.rs), index paths are absolute.
+        // Match by suffix.
+        let mut best: Option<(&FnEntry, usize)> = None;
+        for e in &self.entries {
+            if !e.file_path.ends_with(file_path) && !file_path.ends_with(&e.file_path) {
+                continue;
+            }
+            if line >= e.line && line <= e.end_line {
+                // Prefer tightest span (smallest range)
+                let span = e.end_line - e.line;
+                if best.is_none() || span < best.unwrap().1 {
+                    best = Some((e, span));
+                }
+            }
+        }
+        best.map(|(e, _)| e)
+    }
 }
