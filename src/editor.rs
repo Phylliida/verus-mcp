@@ -344,7 +344,7 @@ fn collect_trait(
         let mut cursor = body.walk();
         for child in body.children(&mut cursor) {
             if child.kind() == "function_item" || child.kind() == "function_signature_item" {
-                if let Some(f) = extract_located_fn(&child, source, None) {
+                if let Some(f) = extract_located_fn(&child, source, Some(&name)) {
                     methods.push(f.clone());
                     items.functions.push(f);
                 }
