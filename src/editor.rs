@@ -531,11 +531,14 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
             // Show signature with body placeholder: `fn foo() { ... }`
             let has_body = f.end_byte > f.start_byte
                 && source[f.start_byte..f.end_byte].trim_end().ends_with('}');
-            let text = if has_body {
-                format!("{} {{ ... }}", f.signature)
+            let mut text = String::new();
+            if has_doc_comment(source, f.start_byte) {
+                text.push_str("// ...\n");
+            }
+            if has_body {
+                text.push_str(&format!("{} {{ ... }}", f.signature));
             } else {
-                // No body (e.g. trait method signature) — show as-is
-                f.signature.clone()
+                text.push_str(&f.signature);
             };
             entries.push((f.start_byte, text, in_verus(f.start_byte)));
         }
@@ -555,10 +558,14 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
             };
             if include {
                 let has_body = t.kind != "type"; // type aliases have no body
-                let text = if has_body {
-                    format!("{} {{ ... }}", t.signature)
+                let mut text = String::new();
+                if has_doc_comment(source, t.start_byte) {
+                    text.push_str("// ...\n");
+                }
+                if has_body {
+                    text.push_str(&format!("{} {{ ... }}", t.signature));
                 } else {
-                    t.signature.clone()
+                    text.push_str(&t.signature);
                 };
                 entries.push((t.start_byte, text, in_verus(t.start_byte)));
             }
@@ -568,11 +575,18 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
     // Traits — show header, then each method with signature on its own line
     if kind_filter.is_none() || kind_filter == Some("trait") {
         for t in &items.traits {
+            let mut lines = Vec::new();
+            if has_doc_comment(source, t.start_byte) {
+                lines.push("// ...".to_string());
+            }
             if t.methods.is_empty() {
-                entries.push((t.start_byte, format!("{} {{ ... }}", t.signature), in_verus(t.start_byte)));
+                lines.push(format!("{} {{ ... }}", t.signature));
             } else {
-                let mut lines = vec![format!("{} {{", t.signature)];
+                lines.push(format!("{} {{", t.signature));
                 for m in &t.methods {
+                    if has_doc_comment(source, m.start_byte) {
+                        lines.push("    // ...".to_string());
+                    }
                     let has_body = source[m.start_byte..m.end_byte].trim_end().ends_with('}');
                     if has_body {
                         lines.push(format!("    {} {{ ... }}", m.signature));
@@ -581,19 +595,26 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
                     }
                 }
                 lines.push("}".to_string());
-                entries.push((t.start_byte, lines.join("\n"), in_verus(t.start_byte)));
             }
+            entries.push((t.start_byte, lines.join("\n"), in_verus(t.start_byte)));
         }
     }
 
     // Impls — show header, then each method with signature on its own line
     if kind_filter.is_none() || kind_filter == Some("impl") {
         for im in &items.impls {
+            let mut lines = Vec::new();
+            if has_doc_comment(source, im.start_byte) {
+                lines.push("// ...".to_string());
+            }
             if im.methods.is_empty() {
-                entries.push((im.start_byte, format!("{} {{ ... }}", im.signature), in_verus(im.start_byte)));
+                lines.push(format!("{} {{ ... }}", im.signature));
             } else {
-                let mut lines = vec![format!("{} {{", im.signature)];
+                lines.push(format!("{} {{", im.signature));
                 for m in &im.methods {
+                    if has_doc_comment(source, m.start_byte) {
+                        lines.push("    // ...".to_string());
+                    }
                     let has_body = source[m.start_byte..m.end_byte].trim_end().ends_with('}');
                     if has_body {
                         lines.push(format!("    {} {{ ... }}", m.signature));
@@ -602,8 +623,8 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
                     }
                 }
                 lines.push("}".to_string());
-                entries.push((im.start_byte, lines.join("\n"), in_verus(im.start_byte)));
             }
+            entries.push((im.start_byte, lines.join("\n"), in_verus(im.start_byte)));
         }
     }
 
@@ -643,8 +664,17 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
     }
 
     let result = output.join("\n");
-    if result.contains("{ ... }") {
-        Ok(format!("{}\n\n// {{ ... }} = body hidden. Use `read` with `name` to view a specific function.", result))
+    let has_body = result.contains("{ ... }");
+    let has_doc = result.contains("// ...");
+    if has_body || has_doc {
+        let mut notes = Vec::new();
+        if has_body {
+            notes.push("// { ... } = body hidden. Use `read` with `name` to view full source.");
+        }
+        if has_doc {
+            notes.push("// // ... = doc comments hidden.");
+        }
+        Ok(format!("{}\n\n{}", result, notes.join("\n")))
     } else {
         Ok(result)
     }
@@ -847,6 +877,8 @@ enum EllipsisGap {
     BraceBlock,
     /// `{ ... }` at end of a line (inline) — literal prefix + brace-balanced block
     InlineBraceBlock,
+    /// `// ...` — match a block of doc comments (`///` lines)
+    DocComment,
 }
 
 /// A segment is either a literal string or a gap (wildcard).
@@ -861,12 +893,14 @@ enum EllipsisPart {
 /// - A line whose trimmed content is `...` → Gap(Any)
 /// - A line whose trimmed content is `{ ... }` or `{...}` → Gap(BraceBlock)
 /// - A line ending with `{ ... }` or `{...}` (inline) → literal prefix + Gap(BraceBlock)
+/// - A line whose trimmed content is `// ...` → Gap(DocComment)
 /// Returns None if no wildcards are found.
 fn split_on_ellipsis(old_string: &str) -> Option<Vec<EllipsisPart>> {
     let lines: Vec<&str> = old_string.lines().collect();
     let has_wildcard = lines.iter().any(|l| {
         let t = l.trim();
         t == "..." || t == "{ ... }" || t == "{...}"
+            || t == "// ..."
             || t.ends_with("{ ... }") || t.ends_with("{...}")
     });
     if !has_wildcard {
@@ -884,6 +918,13 @@ fn split_on_ellipsis(old_string: &str) -> Option<Vec<EllipsisPart>> {
             }
             current.clear();
             parts.push(EllipsisPart::Gap(EllipsisGap::Any));
+        } else if t == "// ..." {
+            let text = current.join("\n");
+            if !text.is_empty() {
+                parts.push(EllipsisPart::Literal(text));
+            }
+            current.clear();
+            parts.push(EllipsisPart::Gap(EllipsisGap::DocComment));
         } else if t == "{ ... }" || t == "{...}" {
             let text = current.join("\n");
             if !text.is_empty() {
@@ -935,7 +976,8 @@ fn find_matching_brace(text: &str, start: usize) -> Option<usize> {
 }
 
 /// Find a literal segment (possibly multi-line) in haystack starting from `from_byte`,
-/// ignoring leading/trailing whitespace per line.
+/// ignoring leading/trailing whitespace per line and skipping blank lines in both
+/// the pattern and haystack.
 /// If `prefix_last_line` is true, the last line matches as a prefix (for inline `{ ... }`).
 /// Returns (start_byte, end_byte) of first match.
 fn find_literal_normalized(
@@ -949,8 +991,12 @@ fn find_literal_normalized(
         return Some((from_byte, from_byte));
     }
 
-    let lit_trimmed: Vec<&str> = lit_lines.iter().map(|l| l.trim()).collect();
-    if lit_trimmed.iter().all(|l| l.is_empty()) {
+    // Filter out blank lines from literal, trim remaining
+    let lit_trimmed: Vec<&str> = lit_lines.iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lit_trimmed.is_empty() {
         return None;
     }
 
@@ -967,29 +1013,44 @@ fn find_literal_normalized(
     for start_idx in 0..hay_lines.len() {
         let (line_start, _) = hay_lines[start_idx];
         if line_start < from_byte { continue; }
-        if start_idx + n > hay_lines.len() { break; }
+        // Skip blank haystack lines as potential start
+        if hay_lines[start_idx].1.trim().is_empty() { continue; }
 
-        let matches = (0..n).all(|j| {
-            let hay_t = hay_lines[start_idx + j].1.trim();
-            let lit_t = lit_trimmed[j];
-            if j == n - 1 && prefix_last_line {
+        // Try to match: consume haystack lines, skipping blanks
+        let mut lit_pos = 0;
+        let mut hay_pos = start_idx;
+        let mut last_matched_hay = start_idx;
+
+        while lit_pos < n && hay_pos < hay_lines.len() {
+            let hay_t = hay_lines[hay_pos].1.trim();
+            if hay_t.is_empty() {
+                hay_pos += 1; // skip blank haystack line
+                continue;
+            }
+            let lit_t = lit_trimmed[lit_pos];
+            let is_last = lit_pos == n - 1;
+            let line_matches = if is_last && prefix_last_line {
                 hay_t.starts_with(lit_t)
             } else {
                 hay_t == lit_t
+            };
+            if line_matches {
+                last_matched_hay = hay_pos;
+                lit_pos += 1;
+                hay_pos += 1;
+            } else {
+                break;
             }
-        });
+        }
 
-        if matches {
+        if lit_pos == n {
             let start_byte = hay_lines[start_idx].0;
-            let end_idx = start_idx + n - 1;
             let end_byte = if prefix_last_line {
-                // For prefix match: end at the end of the matched prefix content in the line
-                // Find where the trimmed literal prefix ends in the actual haystack line
-                let (line_off, line_text) = hay_lines[end_idx];
+                let (line_off, line_text) = hay_lines[last_matched_hay];
                 let leading = line_text.len() - line_text.trim_start().len();
                 line_off + leading + lit_trimmed[n - 1].len()
             } else {
-                let (line_off, line_text) = hay_lines[end_idx];
+                let (line_off, line_text) = hay_lines[last_matched_hay];
                 line_off + line_text.len()
             };
             return Some((start_byte, end_byte));
@@ -1045,6 +1106,86 @@ fn adjust_new_indent(source: &str, match_start: usize, old_string: &str, new_str
     }).collect::<Vec<_>>().join("\n")
 }
 
+/// Skip past a block of doc comment lines (`///`) starting from `from` byte position.
+/// Also skips blank lines before and within the doc block.
+/// Returns the byte position after the doc comment block, or `from` if no doc found.
+fn skip_doc_comment(haystack: &str, from: usize) -> usize {
+    let rest = &haystack[from..];
+    let mut consumed = 0;
+    let mut saw_doc = false;
+
+    for line in rest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("///") {
+            saw_doc = true;
+            consumed += line.len() + 1; // +1 for newline
+        } else if trimmed.is_empty() {
+            consumed += line.len() + 1;
+        } else {
+            break;
+        }
+    }
+
+    if saw_doc { from + consumed.min(haystack.len() - from) } else { from }
+}
+
+/// Check whether there are `///` doc comment lines immediately before `start_byte`.
+fn has_doc_comment(source: &str, start_byte: usize) -> bool {
+    let before = &source[..start_byte];
+    for line in before.lines().rev() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("///") {
+            return true;
+        } else if trimmed.is_empty() {
+            continue;
+        } else {
+            return false;
+        }
+    }
+    false
+}
+
+/// Find the start of a doc comment block (`///` lines) that ends just before `pos`.
+/// Skips blank lines between `pos` and the doc block.
+/// Returns `pos` if no doc comments are found.
+fn find_doc_start_before(haystack: &str, pos: usize) -> usize {
+    let before = &haystack[..pos];
+    let mut result = pos;
+    let mut saw_doc = false;
+
+    for line in before.lines().rev() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("///") {
+            result -= line.len() + 1;
+            saw_doc = true;
+        } else if trimmed.is_empty() {
+            result -= line.len() + 1;
+        } else {
+            break;
+        }
+    }
+
+    if !saw_doc {
+        return pos;
+    }
+
+    // Trim leading blank lines — doc block starts at first `///` line
+    while result < pos {
+        if let Some(nl) = haystack[result..pos].find('\n') {
+            let line = &haystack[result..result + nl];
+            if line.trim().is_empty() {
+                result = result + nl + 1;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    result
+}
+
 /// Find all (start, end) byte spans in `haystack` that match the ellipsis pattern.
 /// Matching ignores leading/trailing whitespace per line.
 /// `...` gaps match the smallest text; `{ ... }` gaps match a brace-balanced block.
@@ -1072,52 +1213,83 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
         let mut current_end = seg_end;
         let mut valid = true;
 
+        // If the first gap (before first literal) is DocComment, extend match backwards
+        // to include the doc comment block
+        let actual_start = if first_idx > 0 && matches!(&parts[first_idx - 1], EllipsisPart::Gap(EllipsisGap::DocComment)) {
+            find_doc_start_before(haystack, match_start)
+        } else {
+            match_start
+        };
+
         for &(part_idx, lit) in &literals[1..] {
-            // Check if the gap before this literal is a brace block
-            let gap_is_brace = part_idx > 0 && matches!(
-                &parts[part_idx - 1],
-                EllipsisPart::Gap(EllipsisGap::BraceBlock) | EllipsisPart::Gap(EllipsisGap::InlineBraceBlock)
-            );
+            // Determine the gap type before this literal
+            let gap = if part_idx > 0 {
+                match &parts[part_idx - 1] {
+                    EllipsisPart::Gap(g) => Some(g),
+                    _ => None,
+                }
+            } else {
+                None
+            };
             // Check if the part after this literal is an InlineBraceBlock
             let this_prefix = part_idx + 1 < parts.len()
                 && matches!(&parts[part_idx + 1], EllipsisPart::Gap(EllipsisGap::InlineBraceBlock));
 
-            if gap_is_brace {
-                if let Some(after_brace) = find_matching_brace(haystack, current_end) {
-                    if let Some((_seg_start, seg_end)) = find_literal_normalized(haystack, lit, after_brace, this_prefix) {
+            match gap {
+                Some(EllipsisGap::BraceBlock) | Some(EllipsisGap::InlineBraceBlock) => {
+                    if let Some(after_brace) = find_matching_brace(haystack, current_end) {
+                        if let Some((_seg_start, seg_end)) = find_literal_normalized(haystack, lit, after_brace, this_prefix) {
+                            current_end = seg_end;
+                        } else {
+                            valid = false;
+                            break;
+                        }
+                    } else {
+                        valid = false;
+                        break;
+                    }
+                }
+                Some(EllipsisGap::DocComment) => {
+                    let after_doc = skip_doc_comment(haystack, current_end);
+                    if let Some((_seg_start, seg_end)) = find_literal_normalized(haystack, lit, after_doc, this_prefix) {
                         current_end = seg_end;
                     } else {
                         valid = false;
                         break;
                     }
-                } else {
-                    valid = false;
-                    break;
                 }
-            } else {
-                // Regular `...` gap — find nearest occurrence
-                if let Some((_seg_start, seg_end)) = find_literal_normalized(haystack, lit, current_end, this_prefix) {
-                    current_end = seg_end;
-                } else {
-                    valid = false;
-                    break;
+                _ => {
+                    // Regular `...` gap or no gap — find nearest occurrence
+                    if let Some((_seg_start, seg_end)) = find_literal_normalized(haystack, lit, current_end, this_prefix) {
+                        current_end = seg_end;
+                    } else {
+                        valid = false;
+                        break;
+                    }
                 }
             }
         }
 
         // If the last part is a brace block gap, consume it
         if valid {
-            if let Some(EllipsisPart::Gap(EllipsisGap::BraceBlock | EllipsisGap::InlineBraceBlock)) = parts.last() {
-                if let Some(after_brace) = find_matching_brace(haystack, current_end) {
-                    current_end = after_brace;
-                } else {
-                    valid = false;
+            match parts.last() {
+                Some(EllipsisPart::Gap(EllipsisGap::BraceBlock | EllipsisGap::InlineBraceBlock)) => {
+                    if let Some(after_brace) = find_matching_brace(haystack, current_end) {
+                        current_end = after_brace;
+                    } else {
+                        valid = false;
+                    }
                 }
+                Some(EllipsisPart::Gap(EllipsisGap::DocComment)) => {
+                    // Trailing doc comment gap — skip doc comments at the end
+                    current_end = skip_doc_comment(haystack, current_end);
+                }
+                _ => {}
             }
         }
 
         if valid {
-            results.push((match_start, current_end));
+            results.push((actual_start, current_end));
         }
         // Advance search past this match start
         search_from = haystack[match_start..].find('\n').map(|p| match_start + p + 1).unwrap_or(haystack.len());
@@ -2107,5 +2279,51 @@ mod tests {
         assert!(result.contains("\n        x + y > 0,"), "ensures item at +8");
         // body at +4
         assert!(result.contains("\n    assert(x + y > 0);"), "body at +4");
+    }
+
+    #[test]
+    fn test_blank_line_insensitive_matching() {
+        // Source has blank lines between items; old_string doesn't
+        let source = "fn foo() {\n    let x = 1;\n\n    let y = 2;\n}\n";
+        let old = "let x = 1;\nlet y = 2;";
+        let new = "let x = 1;\nlet y = 3;";
+        let result = edit_file(source, old, new).unwrap();
+        assert!(result.contains("let y = 3;"), "edit should match through blank lines");
+    }
+
+    #[test]
+    fn test_doc_comment_wildcard() {
+        // `// ...` should match doc comment lines
+        let source = "/// Doc line 1\n/// Doc line 2\npub fn foo(x: int) {\n    body();\n}\n";
+        let old = "// ...\npub fn foo(x: int) { ... }";
+        let new = "/// Updated doc\npub fn foo(x: int, y: int) {\n    new_body();\n}";
+        let result = edit_file(source, old, new).unwrap();
+        assert!(result.contains("/// Updated doc"), "doc comment should be replaced");
+        assert!(result.contains("pub fn foo(x: int, y: int)"), "signature should be updated");
+        assert!(!result.contains("/// Doc line 1"), "old doc should be gone");
+    }
+
+    #[test]
+    fn test_doc_comment_between_methods() {
+        // `// ...` between methods should skip doc comments
+        let source = "    spec fn degree() -> nat;\n\n    /// Doc for next\n    spec fn next() -> bool;\n";
+        let old = "spec fn degree() -> nat;\n// ...\nspec fn next() -> bool;";
+        let new = "spec fn degree() -> nat;\n/// Updated doc\nspec fn next(x: int) -> bool;";
+        let result = edit_file(source, old, new).unwrap();
+        assert!(result.contains("spec fn next(x: int) -> bool;"), "method should be updated");
+    }
+
+    #[test]
+    fn test_list_items_shows_doc_comment_placeholder() {
+        let source = "/// This is documented\nfn foo() {\n    body();\n}\n\nfn bar() {}\n";
+        let result = list_items(source, None).unwrap();
+        assert!(result.contains("// ..."), "should show doc comment placeholder for foo");
+        // bar has no doc comment, should not have // ...
+        let bar_line = result.lines().find(|l| l.contains("fn bar")).unwrap();
+        let bar_idx = result.find(bar_line).unwrap();
+        // Check the line before bar doesn't have // ...
+        let before_bar = &result[..bar_idx];
+        let prev_line = before_bar.lines().last().unwrap_or("");
+        assert!(!prev_line.contains("// ..."), "bar should not have doc comment placeholder");
     }
 }
