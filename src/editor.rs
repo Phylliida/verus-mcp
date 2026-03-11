@@ -505,16 +505,17 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
     // Collect (start_byte, formatted, is_in_verus) entries
     let mut entries: Vec<(usize, String, bool)> = Vec::new();
 
-    // Collect impl method byte ranges to skip in top-level function list
-    let impl_fn_bytes: std::collections::HashSet<usize> = items
+    // Collect impl/trait method byte ranges to skip in top-level function list
+    let nested_fn_bytes: std::collections::HashSet<usize> = items
         .impls
         .iter()
         .flat_map(|im| im.methods.iter().map(|m| m.start_byte))
+        .chain(items.traits.iter().flat_map(|t| t.methods.iter().map(|m| m.start_byte)))
         .collect();
 
-    // Functions (optionally filtered), excluding impl methods (shown under their impl)
+    // Functions (optionally filtered), excluding impl/trait methods (shown under their block)
     for f in &items.functions {
-        if impl_fn_bytes.contains(&f.start_byte) {
+        if nested_fn_bytes.contains(&f.start_byte) {
             continue;
         }
         let include = match kind_filter {
@@ -1148,22 +1149,87 @@ fn collect_skip_ranges(node: &tree_sitter::Node, ranges: &mut Vec<(usize, usize)
     }
 }
 
+/// Collect byte positions of `{` and `}` tokens that belong to `verus_block` nodes,
+/// so we can skip them during depth counting (verus! { } content is at parent indent).
+/// The braces are inside the `declaration_list` child of `verus_block`.
+fn collect_verus_brace_positions(node: &tree_sitter::Node, positions: &mut Vec<usize>) {
+    if node.kind() == "verus_block" {
+        // Find the declaration_list child and get its { } braces
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "declaration_list" {
+                let mut inner = child.walk();
+                for grandchild in child.children(&mut inner) {
+                    let k = grandchild.kind();
+                    if k == "{" || k == "}" {
+                        positions.push(grandchild.start_byte());
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_verus_brace_positions(&child, positions);
+    }
+}
+
+/// Collect extra indentation for Verus clause lines (requires/ensures/decreases/recommends).
+/// Returns a map of row number → extra indent (in spaces).
+/// Keyword lines get +4, clause item lines get +8.
+fn collect_clause_indent(node: &tree_sitter::Node, extra: &mut std::collections::HashMap<usize, usize>) {
+    match node.kind() {
+        "requires_clause" | "ensures_clause" | "decreases_clause" | "recommends_clause" => {
+            let start_row = node.start_position().row;
+            let end_row = node.end_position().row;
+
+            // Find keyword row
+            let mut keyword_row = start_row;
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "requires" | "ensures" | "decreases" | "recommends" => {
+                        keyword_row = child.start_position().row;
+                    }
+                    _ => {}
+                }
+            }
+
+            for row in start_row..=end_row {
+                let indent = if row == keyword_row { 4 } else { 8 };
+                extra.entry(row).and_modify(|v| *v = (*v).max(indent)).or_insert(indent);
+            }
+            return; // don't recurse into clause children
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_clause_indent(&child, extra);
+    }
+}
+
 /// Re-indent source code based on brace depth.
-/// Uses tree-sitter to identify string/comment regions (braces inside are ignored).
-/// Each `{` increases indent, each `}` decreases. 4 spaces per level.
+/// Uses tree-sitter to identify string/comment regions, verus! block braces
+/// (which don't contribute to indentation), and Verus clauses (requires/ensures/
+/// decreases get extra indent). Only `{`/`}` affect depth, not parens.
 pub fn auto_indent(source: &str) -> String {
     let mut parser = tree_sitter::Parser::new();
-    let skip_ranges = if parser.set_language(&tree_sitter_verus::LANGUAGE.into()).is_ok() {
+    let (skip_ranges, verus_braces, clause_extra) = if parser.set_language(&tree_sitter_verus::LANGUAGE.into()).is_ok() {
         if let Some(tree) = parser.parse(source.as_bytes(), None) {
             let mut ranges = Vec::new();
             collect_skip_ranges(&tree.root_node(), &mut ranges);
             ranges.sort_by_key(|&(s, _)| s);
-            ranges
+            let mut vb = Vec::new();
+            collect_verus_brace_positions(&tree.root_node(), &mut vb);
+            let mut ce = std::collections::HashMap::new();
+            collect_clause_indent(&tree.root_node(), &mut ce);
+            (ranges, vb, ce)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new(), std::collections::HashMap::new())
         }
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new(), std::collections::HashMap::new())
     };
 
     let is_skipped = |byte_pos: usize| -> bool {
@@ -1174,9 +1240,14 @@ pub fn auto_indent(source: &str) -> String {
         }).is_ok()
     };
 
+    let is_verus_brace = |byte_pos: usize| -> bool {
+        verus_braces.contains(&byte_pos)
+    };
+
     let mut depth: i32 = 0;
     let mut result_lines = Vec::new();
     let mut byte_offset = 0usize;
+    let mut row = 0usize;
 
     for line in source.lines() {
         let trimmed = line.trim();
@@ -1184,34 +1255,41 @@ pub fn auto_indent(source: &str) -> String {
         if trimmed.is_empty() {
             result_lines.push(String::new());
             byte_offset += line.len() + 1;
+            row += 1;
             continue;
         }
 
-        // Count leading `}` and `)` to decrease depth before indenting this line
+        // Count leading `}` to decrease depth before indenting this line
+        // (but only structural braces, not in strings/comments or verus block braces)
         let mut leading_closes = 0i32;
-        for ch in trimmed.chars() {
-            if ch == '}' || ch == ')' {
+        for (i, ch) in line.char_indices() {
+            if ch.is_whitespace() { continue; }
+            let abs_pos = byte_offset + i;
+            if ch == '}' && !is_skipped(abs_pos) && !is_verus_brace(abs_pos) {
                 leading_closes += 1;
             } else {
                 break;
             }
         }
         let line_depth = (depth - leading_closes).max(0);
-        let indent = "    ".repeat(line_depth as usize);
+        let extra = clause_extra.get(&row).copied().unwrap_or(0);
+        let total_indent = (line_depth as usize) * 4 + extra;
+        let indent = " ".repeat(total_indent);
         result_lines.push(format!("{}{}", indent, trimmed));
 
         // Update depth based on braces in this line
         for (i, ch) in line.char_indices() {
             let abs_pos = byte_offset + i;
-            if is_skipped(abs_pos) { continue; }
+            if is_skipped(abs_pos) || is_verus_brace(abs_pos) { continue; }
             match ch {
-                '{' | '(' => depth += 1,
-                '}' | ')' => depth = (depth - 1).max(0),
+                '{' => depth += 1,
+                '}' => depth = (depth - 1).max(0),
                 _ => {}
             }
         }
 
         byte_offset += line.len() + 1;
+        row += 1;
     }
 
     // Preserve trailing newline if original had one
@@ -1961,4 +2039,73 @@ fn add_regular_fn(
     // Append at end of file
     let trimmed = source.trim_end();
     Ok(format!("{}\n\n{}\n", trimmed, new_fn_source))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_auto_indent_preserves_correct() {
+        let source = "fn foo() {\n    let x = 1;\n    if x > 0 {\n        println!(\"hi\");\n    }\n}\n";
+        let result = auto_indent(source);
+        assert_eq!(source, result);
+    }
+
+    #[test]
+    fn test_auto_indent_fixes_wrong() {
+        let source = "fn foo() {\n  let x = 1;\n      if x > 0 {\n  println!(\"hi\");\n}\n}\n";
+        let result = auto_indent(source);
+        assert!(result.contains("    let x = 1;"));
+        assert!(result.contains("        println!(\"hi\");"));
+    }
+
+    #[test]
+    fn test_auto_indent_verus_block() {
+        let source = "verus! {\n\npub proof fn test(x: int)\n    requires\n        x > 0,\n{\n    assert(x > 0);\n}\n\n} // verus!\n";
+        let result = auto_indent(source);
+        // verus! braces don't add indentation — content stays at depth 0
+        assert!(result.contains("\npub proof fn test(x: int)"), "fn should be at depth 0");
+        // requires keyword gets +4 extra indent
+        assert!(result.contains("\n    requires"), "requires should be at +4");
+        // requires clause items get +8 extra indent
+        assert!(result.contains("\n        x > 0,"), "clause items should be at +8");
+        // Body { } adds one level
+        assert!(result.contains("\n    assert(x > 0);"), "body should be at depth 1");
+    }
+
+    #[test]
+    fn test_auto_indent_braces_in_string() {
+        let source = "fn foo() {\n    let s = \"{ not a block }\";\n    let x = 1;\n}\n";
+        let result = auto_indent(source);
+        // Braces in strings should not affect indentation
+        assert_eq!(source, result);
+    }
+
+    #[test]
+    fn test_edit_file_with_indent_mismatch_and_ellipsis() {
+        let source = "proof fn test(lo: int, hi: int)\n    decreases hi - lo, {\n        body_code();\n    }\n";
+        let old = "   proof fn test(lo: int, hi: int)\n       decreases hi - lo, { ... }";
+        let new = "   proof fn test(lo: int, hi: int)\n       requires lo >= 0,\n       decreases hi - lo, {\n           new_body();\n       }";
+        let result = edit_file(source, old, new).unwrap();
+        // Should be properly auto-indented
+        assert!(result.contains("proof fn test(lo: int, hi: int)"));
+        assert!(result.contains("requires lo >= 0,"));
+    }
+
+    #[test]
+    fn test_auto_indent_requires_ensures() {
+        // Full function with requires + ensures inside verus! block
+        let source = "verus! {\n\nproof fn lemma(x: int, y: int)\nrequires\nx > 0,\ny > 0,\nensures\nx + y > 0,\n{\nassert(x + y > 0);\n}\n\n} // verus!\n";
+        let result = auto_indent(source);
+        // requires/ensures keywords at +4
+        assert!(result.contains("\n    requires"), "requires at +4");
+        assert!(result.contains("\n    ensures"), "ensures at +4");
+        // clause items at +8
+        assert!(result.contains("\n        x > 0,"), "requires item at +8");
+        assert!(result.contains("\n        y > 0,"), "requires item at +8");
+        assert!(result.contains("\n        x + y > 0,"), "ensures item at +8");
+        // body at +4
+        assert!(result.contains("\n    assert(x + y > 0);"), "body at +4");
+    }
 }

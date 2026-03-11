@@ -386,6 +386,96 @@ fn replay_items(idx: &Index, items: &[String]) -> String {
     text
 }
 
+/// Validate and resolve a module path for --verify-module.
+/// Returns Ok(flag_string) or Err(error_message).
+fn validate_module(crate_name: &str, module: &str, crate_dir: &std::path::Path) -> Result<String, String> {
+    let trimmed = module.trim();
+    if trimmed.contains('>') || trimmed.is_empty() {
+        return Err(format!(
+            "Error: invalid module path '{}'. Use a file path like 'src/foo.rs' or module path like 'foo::bar'.",
+            module
+        ));
+    }
+
+    // If it looks like a file path, check it exists
+    if trimmed.contains('/') || trimmed.ends_with(".rs") {
+        let file_path = if trimmed.starts_with("src/") {
+            crate_dir.join(trimmed)
+        } else {
+            crate_dir.join("src").join(trimmed)
+        };
+        if !file_path.exists() {
+            // Collect all .rs files for fuzzy suggestions
+            let src_dir = crate_dir.join("src");
+            let mut rs_files = Vec::new();
+            if let Ok(entries) = walkdir_rs_files(&src_dir) {
+                rs_files = entries;
+            }
+
+            let needle = trimmed.strip_prefix("src/").unwrap_or(trimmed);
+            let mut suggestions: Vec<(usize, &str)> = rs_files.iter()
+                .map(|f| (strsim_distance(needle, f), f.as_str()))
+                .filter(|(d, _)| *d <= 5)
+                .collect();
+            suggestions.sort_by_key(|(d, _)| *d);
+            suggestions.truncate(3);
+
+            let hint = if suggestions.is_empty() {
+                String::new()
+            } else {
+                format!("\n\nDid you mean: {}",
+                    suggestions.iter().map(|(_, f)| format!("src/{}", f)).collect::<Vec<_>>().join(", "))
+            };
+            return Err(format!(
+                "Error: module file '{}' not found in {}/src/.{}",
+                trimmed, crate_name, hint
+            ));
+        }
+    }
+
+    Ok(format!("--verify-module {} ", to_verify_module(crate_name, trimmed)))
+}
+
+/// Walk src/ directory for .rs files, returning paths relative to src/.
+fn walkdir_rs_files(src_dir: &std::path::Path) -> Result<Vec<String>, std::io::Error> {
+    let mut files = Vec::new();
+    fn walk(dir: &std::path::Path, prefix: &str, files: &mut Vec<String>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                if path.is_dir() {
+                    let sub = if prefix.is_empty() { name.clone() } else { format!("{}/{}", prefix, name) };
+                    walk(&path, &sub, files);
+                } else if name.ends_with(".rs") {
+                    let rel = if prefix.is_empty() { name } else { format!("{}/{}", prefix, name) };
+                    files.push(rel);
+                }
+            }
+        }
+    }
+    walk(src_dir, "", &mut files);
+    Ok(files)
+}
+
+/// Simple Levenshtein distance for short strings.
+fn strsim_distance(a: &str, b: &str) -> usize {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    let (m, n) = (a.len(), b.len());
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
 /// Convert a file path or module path to a Verus --verify-module argument.
 /// Verus uses crate-local module paths (e.g., "runtime::polygon", not "verus_geometry::runtime::polygon").
 /// Accepts: "src/runtime/polygon.rs", "runtime/polygon.rs", "runtime::polygon"
@@ -1791,7 +1881,10 @@ On success: clean summary. On failure: extracted error diagnostics with function
 
         let default_verus_root = workspace.join("verus");
         let module_flag = match params.module {
-            Some(ref m) => format!("--verify-module {} ", to_verify_module(&params.crate_name, m)),
+            Some(ref m) => match validate_module(&params.crate_name, m, &crate_dir) {
+                Ok(flag) => flag,
+                Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
+            },
             None => String::new(),
         };
         let script = build_check_script(&default_verus_root, &params.crate_name, &module_flag);
@@ -2102,7 +2195,10 @@ Timeout: 10 minutes.")]
 
         let default_verus_root = workspace.join("verus");
         let module_flag = match params.module {
-            Some(ref m) => format!("--verify-module {} ", to_verify_module(&params.crate_name, m)),
+            Some(ref m) => match validate_module(&params.crate_name, m, &crate_dir) {
+                Ok(flag) => flag,
+                Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
+            }
             None => String::new(),
         };
         let top_n = params.top_n.unwrap_or(25);
@@ -2916,21 +3012,14 @@ Exactly one of name, use_path, or mod_name is required. Reports import changes a
             .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
 
         if let Some(ref name) = params.name {
-            // Read the function source before deleting so we can return it
-            let removed_source = editor::read_fn(&source, name).ok();
             match editor::delete_fn(&source, name) {
                 Ok(new_source) => {
                     std::fs::write(&params.file, &new_source)
                         .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
                     let diff = Self::uses_diff(&source, &new_source);
-                    let removed_section = if let Some(ref src) = removed_source {
-                        format!("\n\nRemoved:\n```\n{}\n```", src)
-                    } else {
-                        String::new()
-                    };
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Deleted function '{}' from {}{}{}",
-                        name, params.file, diff, removed_section
+                        "Deleted '{}' from {}{}",
+                        name, params.file, diff
                     ))]))
                 }
                 Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
