@@ -1961,7 +1961,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 ));
                 return Ok(CallToolResult::success(vec![Content::text(text)]));
             }
-            let annotated = self.annotate_errors(&error_blocks, &loc_re, idx.as_deref());
+            let annotated = self.annotate_errors(&error_blocks, &loc_re, idx.as_deref(), crate_name);
 
             let mut text = format!("{}{}", note_prefix, annotated.join("\n\n"));
             text.push_str(&format!(
@@ -1974,7 +1974,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
         // No summary found — likely a build error.
         let error_blocks = Self::extract_error_blocks(combined);
         if !error_blocks.is_empty() {
-            let annotated = self.annotate_errors(&error_blocks, &loc_re, idx.as_deref());
+            let annotated = self.annotate_errors(&error_blocks, &loc_re, idx.as_deref(), crate_name);
             return Ok(CallToolResult::success(vec![Content::text(format!(
                 "{}No verification summary found (build error?)\n\n{}",
                 note_prefix,
@@ -1998,6 +1998,9 @@ On success: clean summary. On failure: extracted error diagnostics with function
         let mut current_block: Vec<String> = Vec::new();
         let mut in_error = false;
 
+        // Matches compiler source lines like `35 | proof fn...` or ` 4 |   code`
+        let diag_src_re = regex::Regex::new(r"^\s*\d+\s*\|").unwrap();
+
         for line in combined.lines() {
             if (line.starts_with("error:") || line.starts_with("error["))
                 && !line.contains("Verus verification summary")
@@ -2020,6 +2023,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
                     || trimmed.starts_with("help:")
                     || trimmed.starts_with("=")
                     || line.starts_with(' ')
+                    || diag_src_re.is_match(line)
                 {
                     current_block.push(line.to_string());
                 } else {
@@ -2040,120 +2044,195 @@ On success: clean summary. On failure: extracted error diagnostics with function
     }
 
     /// Annotate error blocks with function context: show signature, surrounding
-    /// source lines around the error, and inline error message.
+    /// source lines around the error, and inline error messages.
+    /// Groups multiple errors in the same function so the function is shown once.
     fn annotate_errors(
         &self,
         blocks: &[String],
         loc_re: &regex::Regex,
         idx: Option<&Index>,
+        crate_name: &str,
     ) -> Vec<String> {
         // Cache file contents to avoid re-reading
         let mut file_cache: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
 
-        blocks
-            .iter()
-            .map(|block| {
-                let Some(caps) = loc_re.captures(block) else {
-                    return block.clone();
-                };
-                let file = caps.get(1).unwrap().as_str();
-                let err_line: usize = caps[2].parse().unwrap_or(0);
-                let Some(idx) = idx else {
-                    return block.clone();
-                };
-                let Some(entry) = idx.fn_at_line(file, err_line) else {
-                    return block.clone();
-                };
+        // Group errors by function key (file_path, line, end_line).
+        // Preserve insertion order with Vec of unique keys.
+        let mut fn_keys: Vec<(String, usize, usize)> = Vec::new();
+        // Map: fn_key → Vec<(err_line_0indexed, err_msg)>
+        let mut fn_errors: std::collections::HashMap<(String, usize, usize), Vec<(usize, String)>> =
+            std::collections::HashMap::new();
+        // Blocks that couldn't be associated with a function
+        let mut orphan_blocks: Vec<String> = Vec::new();
 
-                // Extract the error message (first line of block)
-                let err_msg = block.lines().next().unwrap_or("error");
+        // Regex to find the line number from `NN |` source lines in compiler output
+        let src_line_re = regex::Regex::new(r"^\s*(\d+)\s*\|").unwrap();
+        // Regex to find `^^^` or `^` marker lines (the actual error location)
+        let marker_re = regex::Regex::new(r"^\s*\|\s*\^").unwrap();
 
-                // Read file (cached)
-                let lines = file_cache
-                    .entry(entry.file_path.clone())
-                    .or_insert_with(|| {
-                        std::fs::read_to_string(&entry.file_path)
-                            .unwrap_or_default()
-                            .lines()
-                            .map(|l| l.to_string())
-                            .collect()
-                    });
+        for block in blocks {
+            let Some(caps) = loc_re.captures(block) else {
+                orphan_blocks.push(block.clone());
+                continue;
+            };
+            let raw_file = caps.get(1).unwrap().as_str();
+            // Qualify with crate name to avoid cross-crate false matches
+            let qualified_file = format!("{}/{}", crate_name, raw_file);
+            let primary_line: usize = caps[2].parse().unwrap_or(0);
+            let Some(idx) = idx else {
+                orphan_blocks.push(block.clone());
+                continue;
+            };
+            let Some(entry) = idx.fn_at_line(&qualified_file, primary_line) else {
+                orphan_blocks.push(block.clone());
+                continue;
+            };
 
-                if lines.is_empty() {
-                    return block.clone();
+            // Find the actual error line: the source line just before the `^^^` marker
+            let mut err_line = primary_line;
+            let mut last_src_line = primary_line;
+            for line in block.lines() {
+                if let Some(m) = src_line_re.captures(line) {
+                    last_src_line = m[1].parse().unwrap_or(last_src_line);
                 }
+                if marker_re.is_match(line) {
+                    err_line = last_src_line;
+                }
+            }
 
-                // fn lines are 1-indexed
-                let fn_start = entry.line.saturating_sub(1); // to 0-indexed
-                let fn_end = entry.end_line.min(lines.len()); // 1-indexed end, exclusive in slice
-                let err_idx = err_line.saturating_sub(1); // 0-indexed
-                let fn_len = fn_end.saturating_sub(fn_start);
+            let err_msg = block.lines().next().unwrap_or("error").to_string();
+            let key = (entry.file_path.clone(), entry.line, entry.end_line);
+            if !fn_errors.contains_key(&key) {
+                fn_keys.push(key.clone());
+            }
+            fn_errors
+                .entry(key)
+                .or_default()
+                .push((err_line.saturating_sub(1), err_msg));
+        }
 
-                let mut out = Vec::new();
+        let mut results: Vec<String> = Vec::new();
 
-                if fn_len <= 100 {
-                    // Short function: show entire source with error inlined
-                    for i in fn_start..fn_end {
-                        out.push(lines[i].clone());
-                        if i == err_idx {
-                            let indent = lines[i].len() - lines[i].trim_start().len();
+        for key in &fn_keys {
+            let (ref file_path, fn_line, fn_end_line) = *key;
+            let errs = &fn_errors[key];
+
+            let lines = file_cache
+                .entry(file_path.clone())
+                .or_insert_with(|| {
+                    std::fs::read_to_string(file_path)
+                        .unwrap_or_default()
+                        .lines()
+                        .map(|l| l.to_string())
+                        .collect()
+                });
+
+            if lines.is_empty() {
+                for (_, msg) in errs {
+                    results.push(msg.clone());
+                }
+                continue;
+            }
+
+            let fn_start = fn_line.saturating_sub(1); // 0-indexed
+            let fn_end = fn_end_line.min(lines.len());
+            let fn_len = fn_end.saturating_sub(fn_start);
+
+            // Collect error lines into a map: line_idx → Vec<msg>
+            let mut err_map: std::collections::BTreeMap<usize, Vec<&str>> =
+                std::collections::BTreeMap::new();
+            for (err_idx, msg) in errs {
+                err_map.entry(*err_idx).or_default().push(msg.as_str());
+            }
+
+            let mut out = Vec::new();
+
+            if fn_len <= 100 {
+                // Short function: show entire source with errors inlined
+                for i in fn_start..fn_end {
+                    out.push(lines[i].clone());
+                    if let Some(msgs) = err_map.get(&i) {
+                        let indent = lines[i].len() - lines[i].trim_start().len();
+                        for msg in msgs {
                             out.push(format!(
                                 "{}// ^^^ {}",
                                 " ".repeat(indent),
-                                err_msg
+                                msg
                             ));
                         }
                     }
-                } else {
-                    // Long function: show signature + context around error
+                }
+            } else {
+                // Long function: show signature + context windows around each error
 
-                    // Find where the body starts (first `{` line)
-                    let mut body_start = fn_start;
-                    for i in fn_start..fn_end {
-                        if lines[i].contains('{') {
-                            body_start = i;
-                            break;
-                        }
-                    }
-
-                    let ctx = 3usize;
-                    let ctx_start = err_idx.saturating_sub(ctx).max(body_start + 1);
-                    let ctx_end = (err_idx + ctx + 1).min(fn_end);
-
-                    // Signature up to `{` line
-                    for i in fn_start..=body_start.min(fn_end.saturating_sub(1)) {
-                        out.push(lines[i].clone());
-                    }
-
-                    if ctx_start > body_start + 1 {
-                        out.push("    ...".to_string());
-                    }
-
-                    for i in ctx_start..ctx_end {
-                        out.push(lines[i].clone());
-                        if i == err_idx {
-                            let indent = lines[i].len() - lines[i].trim_start().len();
-                            out.push(format!(
-                                "{}// ^^^ {}",
-                                " ".repeat(indent),
-                                err_msg
-                            ));
-                        }
-                    }
-
-                    if ctx_end < fn_end.saturating_sub(1) {
-                        out.push("    ...".to_string());
-                    }
-
-                    if fn_end > 0 && fn_end - 1 >= ctx_end {
-                        out.push(lines[fn_end - 1].clone());
+                // Find where the body starts (first `{` line)
+                let mut body_start = fn_start;
+                for i in fn_start..fn_end {
+                    if lines[i].contains('{') {
+                        body_start = i;
+                        break;
                     }
                 }
 
-                out.join("\n")
-            })
-            .collect()
+                // Build merged context windows around all error lines
+                let ctx = 3usize;
+                let mut windows: Vec<(usize, usize)> = Vec::new();
+                for &err_idx in err_map.keys() {
+                    let w_start = err_idx.saturating_sub(ctx).max(body_start + 1);
+                    let w_end = (err_idx + ctx + 1).min(fn_end);
+                    // Merge with previous window if overlapping
+                    if let Some(last) = windows.last_mut() {
+                        if w_start <= last.1 {
+                            last.1 = last.1.max(w_end);
+                            continue;
+                        }
+                    }
+                    windows.push((w_start, w_end));
+                }
+
+                // Signature up to `{` line
+                for i in fn_start..=body_start.min(fn_end.saturating_sub(1)) {
+                    out.push(lines[i].clone());
+                }
+
+                for (w_idx, &(w_start, w_end)) in windows.iter().enumerate() {
+                    let prev_end = if w_idx == 0 { body_start + 1 } else { windows[w_idx - 1].1 };
+                    if w_start > prev_end {
+                        out.push("    ...".to_string());
+                    }
+
+                    for i in w_start..w_end {
+                        out.push(lines[i].clone());
+                        if let Some(msgs) = err_map.get(&i) {
+                            let indent = lines[i].len() - lines[i].trim_start().len();
+                            for msg in msgs {
+                                out.push(format!(
+                                    "{}// ^^^ {}",
+                                    " ".repeat(indent),
+                                    msg
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                let last_window_end = windows.last().map(|w| w.1).unwrap_or(body_start + 1);
+                if last_window_end < fn_end.saturating_sub(1) {
+                    out.push("    ...".to_string());
+                }
+
+                if fn_end > 0 && fn_end - 1 >= last_window_end {
+                    out.push(lines[fn_end - 1].clone());
+                }
+            }
+
+            results.push(out.join("\n"));
+        }
+
+        // Append orphan blocks (errors not associated with any function)
+        results.extend(orphan_blocks);
+        results
     }
 
     #[tool(description = "Profile Verus verification performance.
