@@ -1922,6 +1922,124 @@ pub fn list_uses(source: &str) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
+/// Produce an indented tree overview of a file's structure.
+/// Uses a single `-` per item, indented to show nesting.
+/// Output looks like:
+/// ```
+/// - use vstd::prelude::*
+/// - mod submodule
+/// - fn my_function
+/// - struct MyStruct
+/// - impl MyStruct
+///   - fn method1
+///   - fn method2
+/// ```
+pub fn list_items_tree(source: &str) -> Result<String, String> {
+    let items = parse_file(source)?;
+
+    // Collect impl/trait method byte ranges to skip in top-level function list
+    let nested_fn_bytes: std::collections::HashSet<usize> = items
+        .impls
+        .iter()
+        .flat_map(|im| im.methods.iter().map(|m| m.start_byte))
+        .chain(items.traits.iter().flat_map(|t| t.methods.iter().map(|m| m.start_byte)))
+        .collect();
+
+    // Collect (start_byte, lines) entries
+    let mut entries: Vec<(usize, Vec<String>)> = Vec::new();
+
+    // Use statements
+    for u in &items.uses {
+        entries.push((u.start_byte, vec![format!("- {}", u.full_text.trim())]));
+    }
+
+    // Top-level functions (not inside impl/trait)
+    for f in &items.functions {
+        if nested_fn_bytes.contains(&f.start_byte) {
+            continue;
+        }
+        let kind_prefix = match f.kind {
+            Some(FnKind::Spec) => "spec fn",
+            Some(FnKind::Proof) => "proof fn",
+            Some(FnKind::Exec) => "fn",
+            None => "fn",
+        };
+        entries.push((f.start_byte, vec![format!("- {} {}", kind_prefix, f.name)]));
+    }
+
+    // Types (struct/enum/type)
+    for t in &items.types {
+        entries.push((t.start_byte, vec![format!("- {} {}", t.kind, t.name)]));
+    }
+
+    // Traits
+    for t in &items.traits {
+        let mut lines = vec![format!("- trait {}", t.name)];
+        for m in &t.methods {
+            let kind_prefix = match m.kind {
+                Some(FnKind::Spec) => "spec fn",
+                Some(FnKind::Proof) => "proof fn",
+                Some(FnKind::Exec) => "fn",
+                None => "fn",
+            };
+            lines.push(format!("  - {} {}", kind_prefix, m.name));
+        }
+        entries.push((t.start_byte, lines));
+    }
+
+    // Impls
+    for im in &items.impls {
+        let header = if let Some(ref trait_name) = im.trait_name {
+            format!("- impl {} for {}", trait_name, im.type_name)
+        } else {
+            format!("- impl {}", im.type_name)
+        };
+        let mut lines = vec![header];
+        for m in &im.methods {
+            let kind_prefix = match m.kind {
+                Some(FnKind::Spec) => "spec fn",
+                Some(FnKind::Proof) => "proof fn",
+                Some(FnKind::Exec) => "fn",
+                None => "fn",
+            };
+            lines.push(format!("  - {} {}", kind_prefix, m.name));
+        }
+        entries.push((im.start_byte, lines));
+    }
+
+    if entries.is_empty() {
+        return Ok("Empty file.".to_string());
+    }
+
+    // Sort by source position
+    entries.sort_by_key(|(byte, _)| *byte);
+
+    // Helper: check if a byte offset falls inside any verus block
+    let in_verus = |byte: usize| -> bool {
+        items.verus_blocks.iter().any(|vb| byte >= vb.body_start_byte && byte < vb.body_end_byte)
+    };
+
+    let mut output = vec!["[file overview — read(path, name) to get an individual item's source]".to_string()];
+    let mut in_verus_group = false;
+
+    for (byte, lines) in &entries {
+        let is_verus = in_verus(*byte);
+        if is_verus && !in_verus_group {
+            output.push("- verus!".to_string());
+            in_verus_group = true;
+        } else if !is_verus && in_verus_group {
+            in_verus_group = false;
+        }
+
+        let indent = if in_verus_group { "  " } else { "" };
+        for line in lines {
+            output.push(format!("{}{}", indent, line));
+        }
+    }
+
+    Ok(output.join("\n"))
+}
+
 /// Add a use statement. If path has no `::`, it needs to be resolved by the
 /// caller (server handler). This function handles the raw insertion.
 pub fn add_use(source: &str, use_path: &str) -> Result<String, String> {
@@ -2325,5 +2443,55 @@ mod tests {
         let before_bar = &result[..bar_idx];
         let prev_line = before_bar.lines().last().unwrap_or("");
         assert!(!prev_line.contains("// ..."), "bar should not have doc comment placeholder");
+    }
+}
+
+#[cfg(test)]
+mod tree_test {
+    use super::*;
+
+    #[test]
+    fn test_list_items_tree() {
+        let source = r#"
+use vstd::prelude::*;
+use crate::topology::mesh::Mesh;
+
+verus! {
+
+pub struct Triangle {
+    pub vertices: [u64; 3],
+}
+
+pub trait Geometry {
+    spec fn area(&self) -> int;
+    proof fn area_positive(&self)
+        ensures self.area() > 0;
+}
+
+impl Geometry for Triangle {
+    spec fn area(&self) -> int {
+        42
+    }
+    proof fn area_positive(&self) {
+    }
+}
+
+pub fn create_triangle(a: u64, b: u64, c: u64) -> (t: Triangle)
+    requires a != b && b != c,
+{
+    Triangle { vertices: [a, b, c] }
+}
+
+} // verus!
+"#;
+        let result = list_items_tree(source).unwrap();
+        println!("TREE OUTPUT:\n{}", result);
+        assert!(result.contains("- use vstd::prelude::*;"));
+        assert!(result.contains("- verus!"));
+        assert!(result.contains("  - struct Triangle"));
+        assert!(result.contains("  - trait Geometry"));
+        assert!(result.contains("    - spec fn area"));
+        assert!(result.contains("  - impl Geometry for Triangle"));
+        assert!(result.contains("  - fn create_triangle"));
     }
 }

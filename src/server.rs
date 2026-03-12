@@ -2814,8 +2814,10 @@ Filters (work with most scopes): kind, crate_name, module, limit, offset.")]
     #[tool(description = "Read files and explore project structure.
 
 No path (or directory path) → list directory contents (files and subdirectories).
-File path, no name → list file overview: use statements, mod declarations, and all item signatures with requires/ensures (bodies shown as { ... }).
-File path + name → full source code of that function (no truncation). Supports 'Type::method' for impl methods.")]
+File path alone → Returns a summary listing of top-level items (use statements, modules, functions, structs, traits, impls with their method names). This is NOT source code.
+File path + name → Returns the full source code of that specific item (function, struct, impl method, etc.). Use 'Type::method' for impl methods.
+
+Note: There is no way to retrieve an entire file's source at once. To view a complete file, you must call read separately for each item.")]
     pub async fn read(
         &self,
         Parameters(params): Parameters<ReadParams>,
@@ -2861,39 +2863,46 @@ File path + name → full source code of that function (no truncation). Supports
         } else {
             let source = std::fs::read_to_string(&path)
                 .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", path, e), None))?;
-            let mut parts = Vec::new();
 
-            // Use statements
-            if let Ok(uses) = editor::list_uses(&source) {
-                if uses != "No use statements found." {
-                    parts.push(uses);
-                }
-            }
-
-            // Mod statements
+            // Mod statements as tree entries (not captured by parse_file)
             let mods: Vec<String> = source
                 .lines()
                 .filter(|l| {
                     let t = l.trim();
                     (t.starts_with("pub mod ") || t.starts_with("mod ")) && t.ends_with(';')
                 })
-                .map(|l| l.trim().to_string())
+                .map(|l| format!("- {}", l.trim()))
                 .collect();
-            if !mods.is_empty() {
-                parts.push(mods.join("\n"));
-            }
 
-            // Items
-            match editor::list_items(&source, None) {
-                Ok(items) if !items.is_empty() && items != "No items found." => parts.push(items),
-                _ => {}
-            }
-
-            let result = if parts.is_empty() {
-                "Empty file.".to_string()
-            } else {
-                parts.join("\n\n")
+            let mut result = match editor::list_items_tree(&source) {
+                Ok(tree) => tree,
+                Err(_) => String::new(),
             };
+
+            // Insert mod entries after use statements but before other items
+            if !mods.is_empty() {
+                let mod_block = mods.join("\n");
+                if result.is_empty() {
+                    result = mod_block;
+                } else {
+                    // Find the last "- use" line to insert mods after
+                    let lines: Vec<&str> = result.lines().collect();
+                    let last_use_idx = lines.iter().rposition(|l| l.starts_with("- use "));
+                    if let Some(idx) = last_use_idx {
+                        let before: Vec<&str> = lines[..=idx].to_vec();
+                        let after: Vec<&str> = lines[idx + 1..].to_vec();
+                        result = format!("{}\n{}\n{}", before.join("\n"), mod_block, after.join("\n"));
+                    } else {
+                        // No use statements, prepend mods
+                        result = format!("{}\n{}", mod_block, result);
+                    }
+                }
+            }
+
+            if result.is_empty() {
+                result = "Empty file.".to_string();
+            }
+
             Ok(CallToolResult::success(vec![Content::text(result)]))
         }
     }
