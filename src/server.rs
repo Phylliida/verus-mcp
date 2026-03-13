@@ -16,6 +16,45 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::watch;
 
+/// JSON diagnostic span from `--message-format=json` output.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+struct DiagSpan {
+    file_name: String,
+    line_start: usize,
+    line_end: usize,
+    column_start: usize,
+    column_end: usize,
+    is_primary: bool,
+    label: Option<String>,
+}
+
+/// JSON diagnostic from `--message-format=json` output.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+struct DiagMessage {
+    message: String,
+    level: String,
+    spans: Vec<DiagSpan>,
+    rendered: Option<String>,
+    code: Option<DiagCode>,
+    children: Option<Vec<DiagMessage>>,
+}
+
+/// Optional error code (e.g., E0308).
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+struct DiagCode {
+    code: String,
+}
+
+/// Cargo JSON line with `reason` field.
+#[derive(Debug, Deserialize)]
+struct CargoJsonLine {
+    reason: String,
+    message: Option<DiagMessage>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchParams {
     /// Name substring to search for
@@ -749,6 +788,8 @@ fn build_check_script(
     pkg: &str,
     module_flag: &str,
 ) -> String {
+    // Use --message-format=json to get structured JSON diagnostics on stdout.
+    // stderr still has the verification summary + fancy notes.
     format!(
         r#"set -euo pipefail
 VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
@@ -761,7 +802,7 @@ esac
 export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
 export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
 export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
-cargo verus verify --manifest-path Cargo.toml -p {pkg} -- {module_flag}--triggers-mode silent 2>&1
+cargo verus verify --manifest-path Cargo.toml -p {pkg} --message-format=json -- {module_flag}--triggers-mode silent || true
 "#,
         default_verus_root = default_verus_root.display(),
         pkg = pkg,
@@ -1895,59 +1936,62 @@ On success: clean summary. On failure: extracted error diagnostics with function
             Ok(output) => output,
             Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
         };
-        let combined = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
 
         if params.raw.unwrap_or(false) {
-            return Ok(CallToolResult::success(vec![Content::text(combined)]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                format!("{}{}", stdout, stderr),
+            )]));
         }
 
         // If --verify-module hit a dependency that doesn't have that module,
         // fall back to full crate verification.
+        // Put stderr first: "Compiling X" lines (stderr) must precede error lines (stdout JSON)
+        // so is_dependency_module_error can track which crate caused the error.
+        let combined = format!("{}{}", stderr, stdout);
         if !module_flag.is_empty() && is_dependency_module_error(&combined, &params.crate_name) {
             let fallback = build_check_script(&default_verus_root, &params.crate_name, "");
             let output = match run_bash_script(&fallback, &crate_dir).await {
                 Ok(output) => output,
                 Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
             };
-            let combined = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
             return self.parse_verus_output(
                 &params.crate_name,
-                &combined,
+                &stdout,
+                &stderr,
                 Some("(--verify-module bypassed: dependency recompilation detected, full crate verified)"),
             );
         }
 
-        self.parse_verus_output(&params.crate_name, &combined, None)
+        self.parse_verus_output(&params.crate_name, &stdout, &stderr, None)
     }
 
     /// Parse cargo verus output into a structured result.
-    /// Enriches error blocks with function context (which function, relative line).
+    /// stdout contains JSON lines from `--message-format=json`.
+    /// stderr contains the verification summary + fancy notes.
     fn parse_verus_output(
         &self,
         crate_name: &str,
-        combined: &str,
+        stdout: &str,
+        stderr: &str,
         note: Option<&str>,
     ) -> Result<CallToolResult, McpError> {
         let note_prefix = note.map(|n| format!("{}\n\n", n)).unwrap_or_default();
         let summary_re =
             regex::Regex::new(r"verification results::\s*(\d+) verified,\s*(\d+) errors")
                 .unwrap();
+        let combined = format!("{}{}", stdout, stderr);
 
-        // Regex to extract file:line:col from --> lines
-        let loc_re = regex::Regex::new(r"-->\s+([^:]+):(\d+):(\d+)").unwrap();
+        // Parse JSON diagnostics from stdout
+        let diagnostics = Self::parse_json_diagnostics(stdout);
 
-        // Try to get index for function lookups (best-effort, don't block)
-        let idx = self.index.read().ok();
+        // Extract verification summary from stderr (or combined, as it may appear in either)
+        let summary_caps = summary_re.captures_iter(&combined).last();
 
-        if let Some(caps) = summary_re.captures_iter(combined).last() {
+        if let Some(caps) = &summary_caps {
             let verified: usize = caps[1].parse().unwrap_or(0);
             let errors: usize = caps[2].parse().unwrap_or(0);
 
@@ -1958,19 +2002,21 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 ))]));
             }
 
-            let error_blocks = Self::extract_error_blocks(combined);
-            if error_blocks.is_empty() {
-                // Failed to parse error blocks — return raw output
-                let mut text = format!("{}{}", note_prefix, combined);
+            // We have errors — use JSON diagnostics
+            if !diagnostics.is_empty() {
+                let annotated = self.annotate_diagnostics(&diagnostics, crate_name);
+                let mut text = format!("{}{}", note_prefix, annotated.join("\n\n"));
                 text.push_str(&format!(
                     "\n\n{}: {} verified, {} errors",
                     crate_name, verified, errors
                 ));
                 return Ok(CallToolResult::success(vec![Content::text(text)]));
             }
-            let annotated = self.annotate_errors(&error_blocks, &loc_re, idx.as_deref(), crate_name);
 
-            let mut text = format!("{}{}", note_prefix, annotated.join("\n\n"));
+            // JSON parse failed — extract rendered text from JSON lines, fall back to stderr
+            let rendered = Self::extract_rendered_text(stdout);
+            let fallback = if !rendered.is_empty() { rendered } else { stderr.to_string() };
+            let mut text = format!("{}{}", note_prefix, fallback);
             text.push_str(&format!(
                 "\n\n{}: {} verified, {} errors",
                 crate_name, verified, errors
@@ -1978,10 +2024,9 @@ On success: clean summary. On failure: extracted error diagnostics with function
             return Ok(CallToolResult::success(vec![Content::text(text)]));
         }
 
-        // No summary found — likely a build error.
-        let error_blocks = Self::extract_error_blocks(combined);
-        if !error_blocks.is_empty() {
-            let annotated = self.annotate_errors(&error_blocks, &loc_re, idx.as_deref(), crate_name);
+        // No verification summary — likely a build error.
+        if !diagnostics.is_empty() {
+            let annotated = self.annotate_diagnostics(&diagnostics, crate_name);
             return Ok(CallToolResult::success(vec![Content::text(format!(
                 "{}No verification summary found (build error?)\n\n{}",
                 note_prefix,
@@ -1989,8 +2034,8 @@ On success: clean summary. On failure: extracted error diagnostics with function
             ))]));
         }
 
-        // Fallback: last 50 lines
-        let lines: Vec<&str> = combined.lines().collect();
+        // Fallback: last 50 lines of stderr
+        let lines: Vec<&str> = stderr.lines().collect();
         let start = lines.len().saturating_sub(50);
         let tail = lines[start..].join("\n");
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -1999,124 +2044,147 @@ On success: clean summary. On failure: extracted error diagnostics with function
         ))]))
     }
 
-    /// Extract error blocks from compiler output.
-    fn extract_error_blocks(combined: &str) -> Vec<String> {
-        let mut error_blocks: Vec<String> = Vec::new();
-        let mut current_block: Vec<String> = Vec::new();
-        let mut in_error = false;
-
-        // Matches compiler source lines like `35 | proof fn...` or ` 4 |   code`
-        let diag_src_re = regex::Regex::new(r"^\s*\d+\s*\|").unwrap();
-
-        for line in combined.lines() {
-            if (line.starts_with("error:") || line.starts_with("error["))
-                && !line.contains("Verus verification summary")
-            {
-                if in_error && !current_block.is_empty() {
-                    error_blocks.push(current_block.join("\n"));
-                    current_block.clear();
-                }
-                in_error = true;
-                current_block.push(line.to_string());
-            } else if in_error {
-                let trimmed = line.trim_start();
-                if trimmed.is_empty() {
-                    error_blocks.push(current_block.join("\n"));
-                    current_block.clear();
-                    in_error = false;
-                } else if trimmed.starts_with('|')
-                    || trimmed.starts_with("-->")
-                    || trimmed.starts_with("note:")
-                    || trimmed.starts_with("help:")
-                    || trimmed.starts_with("=")
-                    || line.starts_with(' ')
-                    || diag_src_re.is_match(line)
-                {
-                    current_block.push(line.to_string());
-                } else {
-                    error_blocks.push(current_block.join("\n"));
-                    current_block.clear();
-                    in_error = false;
+    /// Extract human-readable `rendered` text from JSON stdout lines.
+    /// Used as fallback when full JSON diagnostic parsing fails.
+    fn extract_rendered_text(stdout: &str) -> String {
+        let mut rendered_parts = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for line in stdout.lines() {
+            let line = line.trim();
+            if !line.starts_with('{') {
+                continue;
+            }
+            let Ok(cargo_line) = serde_json::from_str::<CargoJsonLine>(line) else {
+                continue;
+            };
+            if cargo_line.reason != "compiler-message" {
+                continue;
+            }
+            if let Some(msg) = cargo_line.message {
+                if let Some(rendered) = msg.rendered {
+                    let trimmed = rendered.trim().to_string();
+                    if !trimmed.is_empty() && seen.insert(trimmed.clone()) {
+                        rendered_parts.push(trimmed);
+                    }
                 }
             }
         }
-        if !current_block.is_empty() {
-            error_blocks.push(current_block.join("\n"));
-        }
-
-        // Deduplicate (check.sh cats the log on error, producing duplicates)
-        let mut seen = std::collections::HashSet::new();
-        error_blocks.retain(|b| seen.insert(b.clone()));
-        error_blocks
+        rendered_parts.join("\n\n")
     }
 
-    /// Annotate error blocks with function context: show signature, surrounding
-    /// source lines around the error, and inline error messages.
-    /// Groups multiple errors in the same function so the function is shown once.
-    fn annotate_errors(
+    /// Parse JSON diagnostic messages from `--message-format=json` stdout.
+    /// Returns only error/warning/note diagnostics (filters out artifacts, build-script, etc.).
+    fn parse_json_diagnostics(stdout: &str) -> Vec<DiagMessage> {
+        let mut diagnostics = Vec::new();
+        let mut seen_rendered = std::collections::HashSet::new();
+
+        for line in stdout.lines() {
+            let line = line.trim();
+            if !line.starts_with('{') {
+                continue;
+            }
+            let Ok(cargo_line) = serde_json::from_str::<CargoJsonLine>(line) else {
+                continue;
+            };
+            if cargo_line.reason != "compiler-message" {
+                continue;
+            }
+            let Some(msg) = cargo_line.message else {
+                continue;
+            };
+            // Skip noise
+            if msg.level == "failure-note" {
+                continue;
+            }
+            if msg.message.starts_with("aborting due to") {
+                continue;
+            }
+            // Deduplicate by rendered text
+            if let Some(ref rendered) = msg.rendered {
+                if !seen_rendered.insert(rendered.clone()) {
+                    continue;
+                }
+            }
+            diagnostics.push(msg);
+        }
+        diagnostics
+    }
+
+    /// Annotate diagnostics with function context: show function source with
+    /// error messages inlined. Groups multiple errors in the same function.
+    fn annotate_diagnostics(
         &self,
-        blocks: &[String],
-        loc_re: &regex::Regex,
-        idx: Option<&Index>,
+        diagnostics: &[DiagMessage],
         crate_name: &str,
     ) -> Vec<String> {
+        let idx = self.index.read().ok();
+
         // Cache file contents to avoid re-reading
         let mut file_cache: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
 
-        // Group errors by function key (file_path, line, end_line).
+        // Group errors by function key (file_path, fn_line, fn_end_line).
         // Preserve insertion order with Vec of unique keys.
         let mut fn_keys: Vec<(String, usize, usize)> = Vec::new();
         // Map: fn_key → Vec<(err_line_0indexed, err_msg)>
         let mut fn_errors: std::collections::HashMap<(String, usize, usize), Vec<(usize, String)>> =
             std::collections::HashMap::new();
-        // Blocks that couldn't be associated with a function
-        let mut orphan_blocks: Vec<String> = Vec::new();
+        // Diagnostics that couldn't be associated with a function
+        let mut orphan_rendered: Vec<String> = Vec::new();
 
-        // Regex to find the line number from `NN |` source lines in compiler output
-        let src_line_re = regex::Regex::new(r"^\s*(\d+)\s*\|").unwrap();
-        // Regex to find `^^^` or `^` marker lines (the actual error location)
-        let marker_re = regex::Regex::new(r"^\s*\|\s*\^").unwrap();
-
-        for block in blocks {
-            let Some(caps) = loc_re.captures(block) else {
-                orphan_blocks.push(block.clone());
-                continue;
-            };
-            let raw_file = caps.get(1).unwrap().as_str();
-            // Qualify with crate name to avoid cross-crate false matches
-            let qualified_file = format!("{}/{}", crate_name, raw_file);
-            let primary_line: usize = caps[2].parse().unwrap_or(0);
-            let Some(idx) = idx else {
-                orphan_blocks.push(block.clone());
-                continue;
-            };
-            let Some(entry) = idx.fn_at_line(&qualified_file, primary_line) else {
-                orphan_blocks.push(block.clone());
-                continue;
-            };
-
-            // Find the actual error line: the source line just before the `^^^` marker
-            let mut err_line = primary_line;
-            let mut last_src_line = primary_line;
-            for line in block.lines() {
-                if let Some(m) = src_line_re.captures(line) {
-                    last_src_line = m[1].parse().unwrap_or(last_src_line);
+        for diag in diagnostics {
+            // Find the primary span
+            let primary_span = diag.spans.iter().find(|s| s.is_primary);
+            let Some(span) = primary_span else {
+                // No primary span — use rendered text
+                if let Some(ref rendered) = diag.rendered {
+                    orphan_rendered.push(rendered.trim().to_string());
+                } else {
+                    orphan_rendered.push(format!("{}: {}", diag.level, diag.message));
                 }
-                if marker_re.is_match(line) {
-                    err_line = last_src_line;
-                }
-            }
+                continue;
+            };
 
-            let err_msg = block.lines().next().unwrap_or("error").to_string();
+            let qualified_file = format!("{}/{}", crate_name, span.file_name);
+            let primary_line = span.line_start;
+
+            let entry = idx.as_deref().and_then(|i| i.fn_at_line(&qualified_file, primary_line));
+            let Some(entry) = entry else {
+                if let Some(ref rendered) = diag.rendered {
+                    orphan_rendered.push(rendered.trim().to_string());
+                } else {
+                    orphan_rendered.push(format!("{}: {}", diag.level, diag.message));
+                }
+                continue;
+            };
+
+            let err_msg = format!("{}: {}", diag.level, diag.message);
+            let err_line_0idx = primary_line.saturating_sub(1); // 0-indexed
             let key = (entry.file_path.clone(), entry.line, entry.end_line);
             if !fn_errors.contains_key(&key) {
                 fn_keys.push(key.clone());
             }
             fn_errors
-                .entry(key)
+                .entry(key.clone())
                 .or_default()
-                .push((err_line.saturating_sub(1), err_msg));
+                .push((err_line_0idx, err_msg));
+
+            // Also include secondary spans as additional context
+            for sec_span in diag.spans.iter().filter(|s| !s.is_primary) {
+                if let Some(ref label) = sec_span.label {
+                    let sec_file = format!("{}/{}", crate_name, sec_span.file_name);
+                    // Only include if it's in the same function
+                    if sec_file == qualified_file
+                        && sec_span.line_start >= entry.line
+                        && sec_span.line_start <= entry.end_line
+                    {
+                        fn_errors
+                            .entry(key.clone())
+                            .or_default()
+                            .push((sec_span.line_start.saturating_sub(1), format!("  → {}", label)));
+                    }
+                }
+            }
         }
 
         let mut results: Vec<String> = Vec::new();
@@ -2188,7 +2256,6 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 for &err_idx in err_map.keys() {
                     let w_start = err_idx.saturating_sub(ctx).max(body_start + 1);
                     let w_end = (err_idx + ctx + 1).min(fn_end);
-                    // Merge with previous window if overlapping
                     if let Some(last) = windows.last_mut() {
                         if w_start <= last.1 {
                             last.1 = last.1.max(w_end);
@@ -2237,8 +2304,8 @@ On success: clean summary. On failure: extracted error diagnostics with function
             results.push(out.join("\n"));
         }
 
-        // Append orphan blocks (errors not associated with any function)
-        results.extend(orphan_blocks);
+        // Append orphan diagnostics (not associated with any function)
+        results.extend(orphan_rendered);
         results
     }
 
