@@ -97,6 +97,8 @@ pub struct CheckParams {
     /// Optional: verify only this module. Accepts a file path (e.g., "src/runtime/polygon.rs")
     /// or module path (e.g., "runtime::polygon"). Bypasses check.sh and runs cargo verus directly.
     pub module: Option<String>,
+    /// When true, return raw compiler output instead of parsed diagnostics. Useful when error parsing misses something.
+    pub raw: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1849,6 +1851,7 @@ impl VerusMcpServer {
 
 crate_name → crate directory to verify (e.g. 'verus-geometry').
 module (optional) → verify only one module for faster iteration. Accepts file path ('src/runtime/polygon.rs') or module path ('runtime::polygon').
+raw (optional) → when true, return raw compiler output instead of parsed diagnostics.
 
 On success: clean summary. On failure: extracted error diagnostics with function context (which function, relative line within it). Timeout: 10 minutes.")]
     pub async fn check(
@@ -1897,6 +1900,10 @@ On success: clean summary. On failure: extracted error diagnostics with function
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
+
+        if params.raw.unwrap_or(false) {
+            return Ok(CallToolResult::success(vec![Content::text(combined)]));
+        }
 
         // If --verify-module hit a dependency that doesn't have that module,
         // fall back to full crate verification.
