@@ -2080,11 +2080,17 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 .unwrap();
         let combined = format!("{}{}", stdout, stderr);
 
-        // Parse JSON diagnostics from stdout
-        let diagnostics = Self::parse_json_diagnostics(stdout);
-
         // Extract verification summary from stderr (or combined, as it may appear in either)
+        let combined = format!("{}{}", stdout, stderr);
         let summary_caps = summary_re.captures_iter(&combined).last();
+
+        // Determine if there are errors to filter warnings
+        let has_errors = summary_caps.as_ref()
+            .map(|c| c[2].parse::<usize>().unwrap_or(0) > 0)
+            .unwrap_or(false);
+
+        // Parse JSON diagnostics from stdout (suppress warnings when errors exist)
+        let diagnostics = Self::parse_json_diagnostics(stdout, has_errors);
 
         if let Some(caps) = &summary_caps {
             let verified: usize = caps[1].parse().unwrap_or(0);
@@ -2169,7 +2175,8 @@ On success: clean summary. On failure: extracted error diagnostics with function
 
     /// Parse JSON diagnostic messages from `--message-format=json` stdout.
     /// Returns only error/warning/note diagnostics (filters out artifacts, build-script, etc.).
-    fn parse_json_diagnostics(stdout: &str) -> Vec<DiagMessage> {
+    /// When `errors_only` is true, suppresses warnings and notes to reduce noise.
+    fn parse_json_diagnostics(stdout: &str, errors_only: bool) -> Vec<DiagMessage> {
         let mut diagnostics = Vec::new();
         let mut seen_rendered = std::collections::HashSet::new();
 
@@ -2192,6 +2199,10 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 continue;
             }
             if msg.message.starts_with("aborting due to") {
+                continue;
+            }
+            // When we know there are errors, skip warnings/notes to reduce noise
+            if errors_only && msg.level != "error" {
                 continue;
             }
             // Deduplicate by rendered text
@@ -2360,9 +2371,19 @@ On success: clean summary. On failure: extracted error diagnostics with function
                     windows.push((w_start, w_end));
                 }
 
-                // Signature up to `{` line
+                // Signature up to `{` line (also check for errors on signature lines)
                 for i in fn_start..=body_start.min(fn_end.saturating_sub(1)) {
                     out.push(lines[i].clone());
+                    if let Some(msgs) = err_map.get(&i) {
+                        let indent = lines[i].len() - lines[i].trim_start().len();
+                        for msg in msgs {
+                            out.push(format!(
+                                "{}// ^^^ {}",
+                                " ".repeat(indent),
+                                msg
+                            ));
+                        }
+                    }
                 }
 
                 for (w_idx, &(w_start, w_end)) in windows.iter().enumerate() {
