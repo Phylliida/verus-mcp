@@ -2748,8 +2748,8 @@ PYEOF
         Ok(CallToolResult::success(vec![Content::text(stdout.to_string())]))
     }
 
-    #[tool(description = "Build a Verus crate using cargo-verus build.\n\ncrate_name → crate directory to build (e.g. 'verus-gui').\nfeatures (optional) → cargo features to enable.\nrelease (optional) → build in release mode.\nextra_args (optional) → extra flags passed to cargo build.\n\nReturns build diagnostics on failure, success message otherwise. Timeout: 10 minutes.")]
-    pub async fn build(
+    #[tool(description = "Compile a Verus crate binary using cargo-verus build (no verification).\n\nThis is NOT verification — use `check` to verify proofs. This tool only compiles an executable binary, like `cargo build`.\n\ncrate_name → crate directory to compile (e.g. 'verus-gui').\nfeatures (optional) → cargo features to enable.\nrelease (optional) → compile in release mode.\nextra_args (optional) → extra flags passed to cargo build.\n\nReturns build diagnostics on failure, success message otherwise. Timeout: 10 minutes.")]
+    pub async fn compile(
         &self,
         Parameters(params): Parameters<BuildParams>,
     ) -> Result<CallToolResult, McpError> {
