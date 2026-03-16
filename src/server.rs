@@ -2366,6 +2366,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
         crate_name: &str,
     ) -> Vec<String> {
         let idx = self.index.read().ok();
+        let workspace = indexer::find_workspace_root();
 
         // Cache file contents to avoid re-reading
         let mut file_cache: std::collections::HashMap<String, Vec<String>> =
@@ -2444,7 +2445,10 @@ On success: clean summary. On failure: extracted error diagnostics with function
             let lines = file_cache
                 .entry(file_path.clone())
                 .or_insert_with(|| {
-                    std::fs::read_to_string(file_path)
+                    // file_path is a display path like "verus-bigint/src/foo.rs";
+                    // resolve to absolute using workspace root
+                    let abs_path = workspace.join(file_path);
+                    std::fs::read_to_string(&abs_path)
                         .unwrap_or_default()
                         .lines()
                         .map(|l| l.to_string())
