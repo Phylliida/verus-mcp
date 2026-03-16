@@ -141,6 +141,32 @@ pub struct CheckParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct BuildParams {
+    /// Crate directory name (e.g., "verus-geometry")
+    pub crate_name: String,
+    /// Cargo features to enable (e.g., "feat1,feat2")
+    pub features: Option<String>,
+    /// Build in release mode
+    pub release: Option<bool>,
+    /// Extra flags passed to cargo build (e.g., "--target x86_64-unknown-linux-gnu")
+    pub extra_args: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RunParams {
+    /// Crate directory name (e.g., "verus-geometry")
+    pub crate_name: String,
+    /// Cargo features to enable (e.g., "feat1,feat2")
+    pub features: Option<String>,
+    /// Run in release mode
+    pub release: Option<bool>,
+    /// Extra flags passed to cargo run (before --)
+    pub extra_args: Option<String>,
+    /// Arguments passed to the binary (after --)
+    pub args: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct ProfileParams {
     /// Crate directory name (e.g., "verus-geometry", "verus-topology")
     pub crate_name: String,
@@ -905,6 +931,122 @@ cargo verus verify --manifest-path Cargo.toml -p {pkg} --message-format=json -- 
     )
 }
 
+/// Build the bash script for `cargo-verus build`.
+fn build_build_script(
+    default_verus_root: &std::path::Path,
+    pkg: &str,
+    features: Option<&str>,
+    release: bool,
+    extra_args: Option<&str>,
+) -> String {
+    let features_flag = features.map(|f| format!("--features {} ", f)).unwrap_or_default();
+    let release_flag = if release { "--release " } else { "" };
+    let extra = extra_args.unwrap_or("");
+    format!(
+        r#"set -euo pipefail
+VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
+VERUS_SOURCE="$VERUS_ROOT/source"
+CARGO_VERUS="$VERUS_SOURCE/target-verus/release/cargo-verus"
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64)  TOOLCHAIN="1.93.0-aarch64-apple-darwin" ;;
+  Darwin-x86_64) TOOLCHAIN="1.93.0-x86_64-apple-darwin" ;;
+  *)             TOOLCHAIN="1.93.0-x86_64-unknown-linux-gnu" ;;
+esac
+export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
+export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
+export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
+"$CARGO_VERUS" build --manifest-path Cargo.toml -p {pkg} {features_flag}{release_flag}{extra}--message-format=json 2>&1 || true
+"#,
+        default_verus_root = default_verus_root.display(),
+        pkg = pkg,
+        features_flag = features_flag,
+        release_flag = release_flag,
+        extra = if extra.is_empty() { String::new() } else { format!("{} ", extra) },
+    )
+}
+
+/// Build the bash script for `cargo-verus run`.
+///
+/// cargo-verus doesn't have a `run` subcommand, so we build first with
+/// `cargo-verus build`, then run the resulting binary directly.
+fn build_run_script(
+    default_verus_root: &std::path::Path,
+    pkg: &str,
+    features: Option<&str>,
+    release: bool,
+    extra_args: Option<&str>,
+    args: Option<&str>,
+) -> String {
+    let features_flag = features.map(|f| format!("--features {} ", f)).unwrap_or_default();
+    let release_flag = if release { "--release " } else { "" };
+    let extra = extra_args.unwrap_or("");
+    let bin_args = args.unwrap_or("");
+    let profile_dir = if release { "release" } else { "debug" };
+    format!(
+        r#"set -euo pipefail
+VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
+VERUS_SOURCE="$VERUS_ROOT/source"
+CARGO_VERUS="$VERUS_SOURCE/target-verus/release/cargo-verus"
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64)  TOOLCHAIN="1.93.0-aarch64-apple-darwin" ;;
+  Darwin-x86_64) TOOLCHAIN="1.93.0-x86_64-apple-darwin" ;;
+  *)             TOOLCHAIN="1.93.0-x86_64-unknown-linux-gnu" ;;
+esac
+export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
+export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
+export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
+# Discover binary name before building
+# Priority: 1) --bin flag from extra_args, 2) auto-discover from src/bin/, 3) package name
+BIN_NAME=""
+BIN_FLAG=""
+for arg in {extra}; do
+  if [ "${{prev:-}}" = "--bin" ]; then BIN_NAME="$arg"; fi
+  prev="$arg"
+done
+if [ -z "$BIN_NAME" ] && [ -d src/bin ]; then
+  for f in src/bin/*.rs; do
+    BIN_NAME=$(basename "$f" .rs)
+    BIN_FLAG="--bin $BIN_NAME"
+    break
+  done
+fi
+if [ -z "$BIN_NAME" ]; then
+  BIN_NAME="{pkg}"
+fi
+"$CARGO_VERUS" build --manifest-path Cargo.toml -p {pkg} {features_flag}{release_flag}$BIN_FLAG {extra}2>&1
+BIN_NAME_US=$(echo "$BIN_NAME" | tr '-' '_')
+BIN_PATH="target/{profile_dir}/$BIN_NAME_US"
+if [ ! -f "$BIN_PATH" ]; then
+  BIN_PATH="target/{profile_dir}/$BIN_NAME"
+fi
+if [ ! -f "$BIN_PATH" ]; then
+  echo "Binary not found. Available in target/{profile_dir}/:"
+  ls target/{profile_dir}/ | head -20
+  exit 1
+fi
+# On macOS with Nix, set up Vulkan/MoltenVK paths
+if [ "$(uname -s)" = "Darwin" ]; then
+  VK_LIB=$(find /nix/store -name "libvulkan.dylib" 2>/dev/null | head -1)
+  if [ -n "$VK_LIB" ]; then
+    export DYLD_LIBRARY_PATH="$(dirname "$VK_LIB")${{DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}}"
+  fi
+  VK_ICD=$(find /nix/store -name "MoltenVK_icd.json" 2>/dev/null | head -1)
+  if [ -n "$VK_ICD" ]; then
+    export VK_DRIVER_FILES="$VK_ICD"
+  fi
+fi
+exec "$BIN_PATH" {bin_args} 2>&1
+"#,
+        default_verus_root = default_verus_root.display(),
+        pkg = pkg,
+        features_flag = features_flag,
+        release_flag = release_flag,
+        profile_dir = profile_dir,
+        extra = if extra.is_empty() { String::new() } else { format!("{} ", extra) },
+        bin_args = bin_args,
+    )
+}
+
 /// Build the bash preamble for `cargo verus verify` (profile mode).
 /// Returns everything up to (and including) the `python3 ... <<'PYEOF'` line.
 fn build_profile_preamble(
@@ -1054,7 +1196,7 @@ impl VerusMcpServer {
             }
         }
         // Trim to last 100 items to avoid context window limits on replay
-        const MAX_CONTEXT_ITEMS: usize = 100;
+        const MAX_CONTEXT_ITEMS: usize = 80;
         if ctx.items.len() > MAX_CONTEXT_ITEMS {
             let drain_count = ctx.items.len() - MAX_CONTEXT_ITEMS;
             ctx.items.drain(..drain_count);
@@ -2604,6 +2746,143 @@ PYEOF
         }
 
         Ok(CallToolResult::success(vec![Content::text(stdout.to_string())]))
+    }
+
+    #[tool(description = "Build a Verus crate using cargo-verus build.\n\ncrate_name → crate directory to build (e.g. 'verus-gui').\nfeatures (optional) → cargo features to enable.\nrelease (optional) → build in release mode.\nextra_args (optional) → extra flags passed to cargo build.\n\nReturns build diagnostics on failure, success message otherwise. Timeout: 10 minutes.")]
+    pub async fn build(
+        &self,
+        Parameters(params): Parameters<BuildParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
+        let workspace = indexer::find_workspace_root();
+        let crate_dir = workspace.join(&params.crate_name);
+
+        if !crate_dir.join("src").is_dir() {
+            let mut available = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&workspace) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("verus-") && entry.path().join("src").is_dir() {
+                        available.push(name);
+                    }
+                }
+            }
+            available.sort();
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Crate '{}' not found\n\nAvailable crates: {}",
+                params.crate_name,
+                available.join(", ")
+            ))]));
+        }
+
+        let default_verus_root = workspace.join("verus");
+        let script = build_build_script(
+            &default_verus_root,
+            &params.crate_name,
+            params.features.as_deref(),
+            params.release.unwrap_or(false),
+            params.extra_args.as_deref(),
+        );
+        let output = match run_bash_script(&script, &crate_dir).await {
+            Ok(output) => output,
+            Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Parse JSON diagnostics for errors
+        let diagnostics = Self::parse_json_diagnostics(&stdout, true);
+        if !diagnostics.is_empty() {
+            let annotated = self.annotate_diagnostics(&diagnostics, &params.crate_name);
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Build failed\n\n{}",
+                annotated.join("\n\n")
+            ))]));
+        }
+
+        // Check for non-JSON build errors in stderr
+        let has_error = stderr.contains("error[E") || stderr.contains("could not compile");
+        if has_error {
+            let lines: Vec<&str> = stderr.lines().collect();
+            let start = lines.len().saturating_sub(50);
+            let tail = lines[start..].join("\n");
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Build failed\n\n{}", tail
+            ))]));
+        }
+
+        let mode = if params.release.unwrap_or(false) { " (release)" } else { "" };
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{}: built successfully{}", params.crate_name, mode
+        ))]))
+    }
+
+    #[tool(description = "Run a Verus crate using cargo-verus run.\n\ncrate_name → crate directory to run (e.g. 'verus-gui').\nfeatures (optional) → cargo features to enable.\nrelease (optional) → run in release mode.\nextra_args (optional) → extra flags passed to cargo run (before --).\nargs (optional) → arguments passed to the binary (after --).\n\nReturns program stdout/stderr output. On build failure: returns diagnostics. Timeout: 10 minutes.")]
+    pub async fn run(
+        &self,
+        Parameters(params): Parameters<RunParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Some(msg) = self.require_context() {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
+        let workspace = indexer::find_workspace_root();
+        let crate_dir = workspace.join(&params.crate_name);
+
+        if !crate_dir.join("src").is_dir() {
+            let mut available = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&workspace) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("verus-") && entry.path().join("src").is_dir() {
+                        available.push(name);
+                    }
+                }
+            }
+            available.sort();
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Crate '{}' not found\n\nAvailable crates: {}",
+                params.crate_name,
+                available.join(", ")
+            ))]));
+        }
+
+        let default_verus_root = workspace.join("verus");
+        let script = build_run_script(
+            &default_verus_root,
+            &params.crate_name,
+            params.features.as_deref(),
+            params.release.unwrap_or(false),
+            params.extra_args.as_deref(),
+            params.args.as_deref(),
+        );
+        let output = match run_bash_script(&script, &crate_dir).await {
+            Ok(output) => output,
+            Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
+        };
+        let combined = String::from_utf8_lossy(&output.stdout);
+
+        // Since run uses 2>&1, all output is in stdout.
+        // Check for build errors first.
+        let has_build_error = combined.contains("error[E") || combined.contains("could not compile");
+        if has_build_error {
+            let lines: Vec<&str> = combined.lines().collect();
+            let start = lines.len().saturating_sub(80);
+            let tail = lines[start..].join("\n");
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Build/run failed\n\n{}", tail
+            ))]));
+        }
+
+        // Return the program output
+        if combined.trim().is_empty() {
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "{}: ran successfully (no output)", params.crate_name
+            ))]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text(combined.to_string())]))
+        }
     }
 
     #[tool(description = "Force rebuild the proof index from disk. Only re-parses files that changed since the last index. Not normally needed — the server auto-reindexes when .rs files change (500ms debounce). Use after external edits or if the index seems stale.")]
