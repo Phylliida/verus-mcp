@@ -1,0 +1,26 @@
+2026-03-17T02:52:59.761320Z  INFO verus_mcp: Building index...
+2026-03-17T02:52:59.766825Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-2d-constraint-satisfaction/src
+2026-03-17T02:52:59.767088Z ERROR verus_mcp: serving error: ConnectionClosed("initialized request")
+2026-03-17T02:52:59.768064Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-algebra/src
+2026-03-17T02:52:59.768853Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-algebra-2/src
+2026-03-17T02:52:59.769680Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-bigint/src
+2026-03-17T02:52:59.770357Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-canvas/src
+2026-03-17T02:52:59.771159Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-computability-theory/src
+2026-03-17T02:52:59.771937Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-cutedsl/src
+2026-03-17T02:52:59.772784Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-cutedsl-tests/src
+2026-03-17T02:52:59.773592Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-docgenerator/src
+2026-03-17T02:52:59.774508Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-field-extension/src
+2026-03-17T02:52:59.775353Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-geometry/src
+2026-03-17T02:52:59.776194Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-group-theory/src
+2026-03-17T02:52:59.776988Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-gui/src
+2026-03-17T02:52:59.777849Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-interval-arithmetic/src
+2026-03-17T02:52:59.778681Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-linalg/src
+2026-03-17T02:52:59.779771Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-mandelbrot/src
+2026-03-17T02:52:59.780682Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-mcp/src
+2026-03-17T02:52:59.781572Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-quadratic-extension/src
+2026-03-17T02:52:59.782592Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-rational/src
+2026-03-17T02:52:59.783667Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-ray-marching/src
+2026-03-17T02:52:59.784616Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-topology/src
+2026-03-17T02:52:59.785617Z  INFO verus_mcp::watcher: Watching /Users/yams/Prog/verus-cad/verus-vulkan/src
+2026-03-17T02:53:04.535946Z  INFO verus_mcp::indexer: 11409 fns + 681 types + 16 traits + 364 impls, 675 reparsed, 0 cached, 0 deleted
+Error: connection closed: initialized request
