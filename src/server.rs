@@ -572,125 +572,6 @@ fn to_verify_module(crate_name: &str, input: &str) -> String {
     }
 }
 
-/// Check if a "could not find module" error came from a dependency crate, not the target.
-/// This happens when `--verify-module` flags after `--` are passed to ALL crate compilations.
-///
-/// Uses three strategies for robustness:
-/// 1. Parse JSON `compiler-message` lines with `package_id` (most reliable with --message-format=json)
-/// 2. Parse `could not compile \`CRATE\`` lines from stderr
-/// 3. Track `Compiling CRATE` lines from stderr (fallback)
-fn is_dependency_module_error(output: &str, target_pkg: &str) -> bool {
-    // Convert target package name: "verus-field-extension" -> "verus_field_extension" for package_id matching
-    let target_underscore = target_pkg.replace('-', "_");
-
-    let mut last_compiling_crate = None;
-    let mut found_module_error = false;
-
-    for line in output.lines() {
-        // Strip ANSI escape codes for robust parsing
-        let clean = strip_ansi(line);
-        let trimmed = clean.trim_start();
-
-        // Strategy 1: Parse JSON compiler-message lines with package_id
-        if trimmed.starts_with('{') && trimmed.contains("\"compiler-message\"") {
-            if trimmed.contains("could not find module") {
-                // Extract package_id from JSON to determine source crate
-                // package_id format: "path+file:///path/to/CRATE#VERSION" or "CRATE VERSION (path)"
-                if let Some(pkg) = extract_json_package_name(trimmed) {
-                    if pkg != target_pkg && pkg != target_underscore {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        // Strategy 3: Track "Compiling CRATE" lines from stderr
-        if let Some(rest) = trimmed.strip_prefix("Compiling ") {
-            if let Some(name) = rest.split_whitespace().next() {
-                last_compiling_crate = Some(name.to_string());
-            }
-        }
-
-        // Check plain-text "could not find module" errors
-        if clean.contains("could not find module")
-            && (clean.contains("--verify-module") || clean.contains("--verify-only-module"))
-        {
-            found_module_error = true;
-            // Strategy 3: Check last "Compiling" crate
-            if let Some(ref crate_name) = last_compiling_crate {
-                if crate_name != target_pkg {
-                    return true;
-                }
-            }
-        }
-
-        // Strategy 2: Parse "could not compile `CRATE`" lines
-        if found_module_error {
-            if let Some(failed_crate) = extract_failed_crate(trimmed) {
-                if failed_crate != target_pkg && failed_crate != target_underscore {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Strip ANSI escape codes from a string.
-fn strip_ansi(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            // Skip escape sequence: ESC [ ... (letter)
-            if chars.next() == Some('[') {
-                for c2 in chars.by_ref() {
-                    if c2.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
-/// Extract package name from a JSON compiler-message line's package_id field.
-/// package_id format: "path+file:///path/to/CRATE#VERSION"
-fn extract_json_package_name(json_line: &str) -> Option<String> {
-    // Find "package_id":"..." in the JSON
-    let marker = "\"package_id\":\"";
-    let start = json_line.find(marker)? + marker.len();
-    let end = json_line[start..].find('"')? + start;
-    let package_id = &json_line[start..end];
-
-    // Extract crate name from path: "path+file:///path/to/verus-field-extension#0.1.0"
-    // or "path+file:///path/to/verus-algebra#0.1.0"
-    if let Some(path_part) = package_id.strip_prefix("path+file://") {
-        // Strip #version suffix
-        let path = path_part.split('#').next().unwrap_or(path_part);
-        // Get directory name (last component of path)
-        return path.rsplit('/').next().map(|s| s.to_string());
-    }
-
-    // Registry format: "registry+...#CRATE@VERSION"
-    if let Some(reg_part) = package_id.split('#').nth(1) {
-        return reg_part.split('@').next().map(|s| s.to_string());
-    }
-
-    None
-}
-
-/// Extract crate name from "could not compile `CRATE`" error line.
-fn extract_failed_crate(line: &str) -> Option<String> {
-    let marker = "could not compile `";
-    let start = line.find(marker)? + marker.len();
-    let end = line[start..].find('`')? + start;
-    Some(line[start..end].to_string())
-}
-
 /// If the body field contains a full function (with signature, requires/ensures),
 /// assemble the structured fields into a signature and wrap the body to form a
 /// complete function, then parse with tree-sitter. If it parses as a valid function,
@@ -2182,12 +2063,12 @@ On success: clean summary. On failure: extracted error diagnostics with function
             )]));
         }
 
-        // If --verify-module hit a dependency that doesn't have that module,
-        // fall back to full crate verification.
-        // Put stderr first: "Compiling X" lines (stderr) must precede error lines (stdout JSON)
-        // so is_dependency_module_error can track which crate caused the error.
-        let combined = format!("{}{}", stderr, stdout);
-        if !module_flag.is_empty() && is_dependency_module_error(&combined, &params.crate_name) {
+        // If --verify-module was used, always do a full crate verification after.
+        // This is simpler than trying to detect if the module flag triggered
+        // dependency rebuilds (which can produce false positives/negatives).
+        // The first run with --verify-module will build any needed dependencies;
+        // the second run verifies the full crate.
+        if !module_flag.is_empty() {
             let fallback = build_check_script(&default_verus_root, &params.crate_name, "");
             let output = match run_bash_script(&fallback, &crate_dir).await {
                 Ok(output) => output,
@@ -2199,7 +2080,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 &params.crate_name,
                 &stdout,
                 &stderr,
-                Some("(--verify-module bypassed: dependency recompilation detected, full crate verified)"),
+                Some("(full crate verified after module check)"),
             );
         }
 
@@ -2706,40 +2587,41 @@ PYEOF
             Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
         };
 
+        // If --verify-module was used, always do a full crate profile after.
+        // This avoids false positive/negative detection issues.
+        if !module_flag.is_empty() {
+            let retry_preamble = build_profile_preamble(
+                &default_verus_root,
+                &params.crate_name,
+                "",
+                top_n,
+            );
+            let retry_script = format!("{}{}", retry_preamble, python_part);
+            let output = match run_bash_script(&retry_script, &crate_dir).await {
+                Ok(output) => output,
+                Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
+            };
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stdout.trim().is_empty() {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "(full crate profiled after module check)\n\n{}",
+                    stdout
+                ))]));
+            }
+            // Fallback output also empty - show stderr
+            let lines: Vec<&str> = stderr.lines().collect();
+            let start = lines.len().saturating_sub(50);
+            let tail = lines[start..].join("\n");
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Profile failed\n\n{}", tail
+            ))]));
+        }
+
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if stdout.trim().is_empty() {
-            // Check if a dependency failed due to --verify-module flag
-            if !module_flag.is_empty() && is_dependency_module_error(&stderr, &params.crate_name) {
-                let retry_preamble = build_profile_preamble(
-                    &default_verus_root,
-                    &params.crate_name,
-                    "",
-                    top_n,
-                );
-                let retry_script = format!("{}{}", retry_preamble, python_part);
-                let output = match run_bash_script(&retry_script, &crate_dir).await {
-                    Ok(output) => output,
-                    Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
-                };
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stdout.trim().is_empty() {
-                    return Ok(CallToolResult::success(vec![Content::text(format!(
-                        "(--verify-module bypassed: dependency recompilation detected, full crate profiled)\n\n{}",
-                        stdout
-                    ))]));
-                }
-                // Retry also failed
-                let lines: Vec<&str> = stderr.lines().collect();
-                let start = lines.len().saturating_sub(50);
-                let tail = lines[start..].join("\n");
-                return Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Profile failed\n\n{}", tail
-                ))]));
-            }
-
             // Python or cargo failed — show stderr
             let lines: Vec<&str> = stderr.lines().collect();
             let start = lines.len().saturating_sub(50);
