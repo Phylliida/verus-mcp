@@ -792,6 +792,20 @@ fn build_check_script(
 ) -> String {
     // Use --message-format=json to get structured JSON diagnostics on stdout.
     // stderr still has the verification summary + fancy notes.
+    //
+    // When --verify-module is used, we must pre-build dependencies without the flag.
+    // Flags after `--` are passed to ALL rustc invocations (including deps), so
+    // --verify-module would cause Verus to fail on dependency crates that don't have
+    // the specified module. Pre-building caches deps so the real verify only compiles
+    // the target crate.
+    let prebuild = if module_flag.contains("--verify-module") {
+        format!(
+            "cargo verus verify --manifest-path Cargo.toml -p {pkg} -- --no-verify --triggers-mode silent 2>/dev/null || true\n",
+            pkg = pkg,
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"set -euo pipefail
 VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
@@ -804,12 +818,29 @@ esac
 export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
 export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
 export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
-cargo verus verify --manifest-path Cargo.toml -p {pkg} --message-format=json -- {module_flag}--triggers-mode silent || true
+{prebuild}cargo verus verify --manifest-path Cargo.toml -p {pkg} --message-format=json -- {module_flag}--triggers-mode silent || true
 "#,
         default_verus_root = default_verus_root.display(),
         pkg = pkg,
         module_flag = module_flag,
+        prebuild = prebuild,
     )
+}
+
+/// Check if dependency crates were compiled during a cargo verus run.
+/// Looks for "Compiling <crate>" lines in stderr where <crate> is not the target.
+fn has_dependency_compilation(stderr: &str, target_crate: &str) -> bool {
+    let target_underscore = target_crate.replace('-', "_");
+    for line in stderr.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Compiling ") {
+            let crate_name = rest.split_whitespace().next().unwrap_or("");
+            if crate_name != target_crate && crate_name != target_underscore {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Build the bash script for `cargo-verus build`.
@@ -936,6 +967,15 @@ fn build_profile_preamble(
     module_flag: &str,
     top_n: usize,
 ) -> String {
+    // Pre-build deps when --verify-module is used (same reason as build_check_script).
+    let prebuild = if module_flag.contains("--verify-module") {
+        format!(
+            "cargo verus verify --manifest-path Cargo.toml -p {pkg} -- --no-verify --triggers-mode silent 2>/dev/null || true\n\n",
+            pkg = pkg,
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"set -euo pipefail
 unset RUSTFLAGS
@@ -954,7 +994,7 @@ export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
 JSON_FILE="$(mktemp)"
 trap 'rm -f "$JSON_FILE"' EXIT
 
-cargo verus verify --manifest-path Cargo.toml -p {pkg} \
+{prebuild}cargo verus verify --manifest-path Cargo.toml -p {pkg} \
   -- {module_flag}--output-json --time-expanded --triggers-mode silent > "$JSON_FILE" || true
 
 python3 - "$JSON_FILE" "{top_n}" <<'PYEOF'
@@ -962,6 +1002,7 @@ python3 - "$JSON_FILE" "{top_n}" <<'PYEOF'
         default_verus_root = default_verus_root.display(),
         pkg = pkg,
         module_flag = module_flag,
+        prebuild = prebuild,
         top_n = top_n,
     )
 }
@@ -2054,8 +2095,8 @@ On success: clean summary. On failure: extracted error diagnostics with function
             Ok(output) => output,
             Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
         };
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
         if params.raw.unwrap_or(false) {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -2063,26 +2104,21 @@ On success: clean summary. On failure: extracted error diagnostics with function
             )]));
         }
 
-        // If --verify-module was used, always do a full crate verification after.
-        // This is simpler than trying to detect if the module flag triggered
-        // dependency rebuilds (which can produce false positives/negatives).
-        // The first run with --verify-module will build any needed dependencies;
-        // the second run verifies the full crate.
-        if !module_flag.is_empty() {
-            let fallback = build_check_script(&default_verus_root, &params.crate_name, "");
-            let output = match run_bash_script(&fallback, &crate_dir).await {
+        // If dependencies were recompiled, the verification summary may reflect
+        // dependency counts instead of the target crate's results. Detect this
+        // and rerun so dependencies are cached and we get clean results.
+        let (stdout, stderr) = if has_dependency_compilation(&stderr, &params.crate_name) {
+            let output = match run_bash_script(&script, &crate_dir).await {
                 Ok(output) => output,
                 Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
             };
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return self.parse_verus_output(
-                &params.crate_name,
-                &stdout,
-                &stderr,
-                Some("(full crate verified after module check)"),
-            );
-        }
+            (
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        } else {
+            (stdout, stderr)
+        };
 
         self.parse_verus_output(&params.crate_name, &stdout, &stderr, None)
     }
