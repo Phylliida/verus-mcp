@@ -785,27 +785,35 @@ async fn run_bash_script(
 }
 
 /// Build the bash script for `cargo verus verify` (check mode).
+///
+/// When `use_json` is true, adds `--message-format=json` for structured diagnostics.
+/// When false (raw mode), omits it so output is human-readable.
+///
+/// When `--verify-module` is used, a silent pre-build caches dependencies first.
+/// All pre-build output is suppressed to avoid leaking stale verification counts.
 fn build_check_script(
     default_verus_root: &std::path::Path,
     pkg: &str,
     module_flag: &str,
+    use_json: bool,
 ) -> String {
-    // Use --message-format=json to get structured JSON diagnostics on stdout.
-    // stderr still has the verification summary + fancy notes.
-    //
     // When --verify-module is used, we must pre-build dependencies without the flag.
     // Flags after `--` are passed to ALL rustc invocations (including deps), so
     // --verify-module would cause Verus to fail on dependency crates that don't have
     // the specified module. Pre-building caches deps so the real verify only compiles
     // the target crate.
+    //
+    // All pre-build output (stdout+stderr) is suppressed to prevent its verification
+    // summary from leaking into the parsed output.
     let prebuild = if module_flag.contains("--verify-module") {
         format!(
-            "cargo verus verify --manifest-path Cargo.toml -p {pkg} -- --no-verify --triggers-mode silent 2>/dev/null || true\n",
+            "cargo verus verify --manifest-path Cargo.toml -p {pkg} -- --no-verify --triggers-mode silent >/dev/null 2>&1 || true\n",
             pkg = pkg,
         )
     } else {
         String::new()
     };
+    let json_flag = if use_json { "--message-format=json " } else { "" };
     format!(
         r#"set -euo pipefail
 VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
@@ -818,12 +826,13 @@ esac
 export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
 export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
 export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
-{prebuild}cargo verus verify --manifest-path Cargo.toml -p {pkg} --message-format=json -- {module_flag}--triggers-mode silent || true
+{prebuild}cargo verus verify --manifest-path Cargo.toml -p {pkg} {json_flag}-- {module_flag}--triggers-mode silent || true
 "#,
         default_verus_root = default_verus_root.display(),
         pkg = pkg,
         module_flag = module_flag,
         prebuild = prebuild,
+        json_flag = json_flag,
     )
 }
 
@@ -970,7 +979,7 @@ fn build_profile_preamble(
     // Pre-build deps when --verify-module is used (same reason as build_check_script).
     let prebuild = if module_flag.contains("--verify-module") {
         format!(
-            "cargo verus verify --manifest-path Cargo.toml -p {pkg} -- --no-verify --triggers-mode silent 2>/dev/null || true\n\n",
+            "cargo verus verify --manifest-path Cargo.toml -p {pkg} -- --no-verify --triggers-mode silent >/dev/null 2>&1 || true\n\n",
             pkg = pkg,
         )
     } else {
@@ -2090,7 +2099,11 @@ On success: clean summary. On failure: extracted error diagnostics with function
             },
             None => String::new(),
         };
-        let script = build_check_script(&default_verus_root, &params.crate_name, &module_flag);
+        let is_raw = params.raw.unwrap_or(false);
+        // raw mode: no JSON, human-readable output
+        // normal mode: JSON for structured diagnostics
+        let script = build_check_script(
+            &default_verus_root, &params.crate_name, &module_flag, !is_raw);
         let output = match run_bash_script(&script, &crate_dir).await {
             Ok(output) => output,
             Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
@@ -2098,34 +2111,55 @@ On success: clean summary. On failure: extracted error diagnostics with function
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
-        if params.raw.unwrap_or(false) {
+        if is_raw {
             return Ok(CallToolResult::success(vec![Content::text(
                 format!("{}{}", stdout, stderr),
             )]));
         }
 
-        // If dependencies were recompiled, the verification summary may reflect
-        // dependency counts instead of the target crate's results. Detect this
-        // and rerun so dependencies are cached and we get clean results.
-        let (stdout, stderr) = if has_dependency_compilation(&stderr, &params.crate_name) {
+        // Check if dependencies were compiled during this run.
+        // If so, the verification counts may reflect dependency results, not the target.
+        if has_dependency_compilation(&stderr, &params.crate_name) {
+            // Check if the build itself failed (dependency or target)
+            let has_build_error = stderr.contains("error[E")
+                || stderr.contains("could not compile")
+                || stdout.contains("error[E");
+            if has_build_error {
+                // Build failed — report the error from this run rather than rerunning.
+                // Parse diagnostics to show what went wrong.
+                let diagnostics = Self::parse_json_diagnostics(&stdout, true);
+                if !diagnostics.is_empty() {
+                    let annotated = self.annotate_diagnostics(&diagnostics, &params.crate_name);
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Build failed (dependency compilation detected)\n\n{}",
+                        annotated.join("\n\n")
+                    ))]));
+                }
+                let rendered = Self::extract_rendered_text(&stdout);
+                let fallback = if !rendered.is_empty() { rendered } else { stderr.clone() };
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Build failed (dependency compilation detected)\n\n{}", fallback
+                ))]));
+            }
+
+            // Dependencies compiled successfully — rerun so deps are cached
+            // and we get counts scoped to the target crate only.
             let output = match run_bash_script(&script, &crate_dir).await {
                 Ok(output) => output,
                 Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
             };
-            (
-                String::from_utf8_lossy(&output.stdout).into_owned(),
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            )
-        } else {
-            (stdout, stderr)
-        };
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            return self.parse_verus_output(&params.crate_name, &stdout, &stderr, None);
+        }
 
         self.parse_verus_output(&params.crate_name, &stdout, &stderr, None)
     }
 
     /// Parse cargo verus output into a structured result.
-    /// stdout contains JSON lines from `--message-format=json`.
-    /// stderr contains the verification summary + fancy notes.
+    /// stdout contains JSON lines from `--message-format=json` (plus possibly the
+    /// verification summary from the verus compiler's println!).
+    /// stderr contains cargo progress messages and fancy notes.
     fn parse_verus_output(
         &self,
         crate_name: &str,
@@ -2137,10 +2171,12 @@ On success: clean summary. On failure: extracted error diagnostics with function
         let summary_re =
             regex::Regex::new(r"verification results::\s*(\d+) verified,\s*(\d+) errors")
                 .unwrap();
-        let combined = format!("{}{}", stdout, stderr);
 
-        // Extract verification summary from stderr (or combined, as it may appear in either)
-        let combined = format!("{}{}", stdout, stderr);
+        // Search both stdout and stderr for the verification summary.
+        // The verus compiler prints it via println! (stdout), but cargo may
+        // route it to either stream depending on message format settings.
+        // Use .last() to get the final (most relevant) match.
+        let combined = format!("{}\n{}", stdout, stderr);
         let summary_caps = summary_re.captures_iter(&combined).last();
 
         // Determine if there are errors to filter warnings
