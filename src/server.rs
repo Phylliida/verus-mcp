@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::watch;
 
-/// JSON diagnostic span from `--message-format=json` output.
+///  JSON diagnostic span from `--message-format=json` output.
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 struct DiagSpan {
@@ -29,7 +29,7 @@ struct DiagSpan {
     label: Option<String>,
 }
 
-/// JSON diagnostic from `--message-format=json` output.
+///  JSON diagnostic from `--message-format=json` output.
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 struct DiagMessage {
@@ -41,14 +41,14 @@ struct DiagMessage {
     children: Option<Vec<DiagMessage>>,
 }
 
-/// Optional error code (e.g., E0308).
+///  Optional error code (e.g., E0308).
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 struct DiagCode {
     code: String,
 }
 
-/// Cargo JSON line with `reason` field.
+///  Cargo JSON line with `reason` field.
 #[derive(Debug, Deserialize)]
 struct CargoJsonLine {
     reason: String,
@@ -57,269 +57,269 @@ struct CargoJsonLine {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchParams {
-    /// Name substring to search for
+    ///  Name substring to search for
     pub query: String,
-    /// Filter by function kind: "spec", "proof", or "exec"
+    ///  Filter by function kind: "spec", "proof", or "exec"
     pub kind: Option<String>,
-    /// Filter by crate name
+    ///  Filter by crate name
     pub crate_name: Option<String>,
-    /// Filter by module path substring
+    ///  Filter by module path substring
     pub module: Option<String>,
-    /// Only show trait axioms/methods
+    ///  Only show trait axioms/methods
     #[serde(default)]
     pub trait_only: bool,
-    /// When true, return full signatures with requires/ensures (default limit drops to 10)
+    ///  When true, return full signatures with requires/ensures (default limit drops to 10)
     #[serde(default)]
     pub details: bool,
-    /// Max results to return (default 50, or 10 when details=true)
+    ///  Max results to return (default 50, or 10 when details=true)
     pub limit: Option<usize>,
-    /// Skip first N results for pagination (default 0)
+    ///  Skip first N results for pagination (default 0)
     pub offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LookupParams {
-    /// Exact function name to look up
+    ///  Exact function name to look up
     pub name: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BatchLookupParams {
-    /// List of function/type names to look up (max 10)
+    ///  List of function/type names to look up (max 10)
     pub names: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ClauseSearchParams {
-    /// Substring to search within requires/ensures clauses
+    ///  Substring to search within requires/ensures clauses
     pub query: String,
-    /// Filter by crate name
+    ///  Filter by crate name
     pub crate_name: Option<String>,
-    /// Filter by module path substring
+    ///  Filter by module path substring
     pub module: Option<String>,
-    /// Filter by function name substring
+    ///  Filter by function name substring
     pub name: Option<String>,
-    /// Filter by function kind: "spec", "proof", or "exec"
+    ///  Filter by function kind: "spec", "proof", or "exec"
     pub kind: Option<String>,
-    /// Max results to return (default 50)
+    ///  Max results to return (default 50)
     pub limit: Option<usize>,
-    /// Skip first N results for pagination (default 0)
+    ///  Skip first N results for pagination (default 0)
     pub offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SignatureSearchParams {
-    /// Substring to match against parameter types (e.g., "Vec2", "Point3", "Seq")
+    ///  Substring to match against parameter types (e.g., "Vec2", "Point3", "Seq")
     pub param_type: Option<String>,
-    /// Substring to match against return type (e.g., "bool", "Sign")
+    ///  Substring to match against return type (e.g., "bool", "Sign")
     pub return_type: Option<String>,
-    /// Substring to match against type parameter bounds (e.g., "OrderedRing", "Field")
+    ///  Substring to match against type parameter bounds (e.g., "OrderedRing", "Field")
     pub type_bound: Option<String>,
-    /// Optional name substring filter to combine with type filters
+    ///  Optional name substring filter to combine with type filters
     pub name: Option<String>,
-    /// Filter by function kind: "spec", "proof", or "exec"
+    ///  Filter by function kind: "spec", "proof", or "exec"
     pub kind: Option<String>,
-    /// Filter by crate name
+    ///  Filter by crate name
     pub crate_name: Option<String>,
-    /// Filter by module path substring
+    ///  Filter by module path substring
     pub module: Option<String>,
-    /// Max results to return (default 50)
+    ///  Max results to return (default 50)
     pub limit: Option<usize>,
-    /// Skip first N results for pagination (default 0)
+    ///  Skip first N results for pagination (default 0)
     pub offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CheckParams {
-    /// Crate directory name (e.g., "verus-geometry", "verus-topology")
+    ///  Crate directory name (e.g., "verus-geometry", "verus-topology")
     pub crate_name: String,
-    /// Optional: verify only this module. Accepts a file path (e.g., "src/runtime/polygon.rs")
-    /// or module path (e.g., "runtime::polygon"). Bypasses check.sh and runs cargo verus directly.
+    ///  Optional: verify only this module. Accepts a file path (e.g., "src/runtime/polygon.rs")
+    ///  or module path (e.g., "runtime::polygon"). Bypasses check.sh and runs cargo verus directly.
     pub module: Option<String>,
-    /// When true, return raw compiler output instead of parsed diagnostics. Useful when error parsing misses something.
+    ///  When true, return raw compiler output instead of parsed diagnostics. Useful when error parsing misses something.
     pub raw: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BuildParams {
-    /// Crate directory name (e.g., "verus-geometry")
+    ///  Crate directory name (e.g., "verus-geometry")
     pub crate_name: String,
-    /// Cargo features to enable (e.g., "feat1,feat2")
+    ///  Cargo features to enable (e.g., "feat1,feat2")
     pub features: Option<String>,
-    /// Build in release mode
+    ///  Build in release mode
     pub release: Option<bool>,
-    /// Extra flags passed to cargo build (e.g., "--target x86_64-unknown-linux-gnu")
+    ///  Extra flags passed to cargo build (e.g., "--target x86_64-unknown-linux-gnu")
     pub extra_args: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RunParams {
-    /// Crate directory name (e.g., "verus-geometry")
+    ///  Crate directory name (e.g., "verus-geometry")
     pub crate_name: String,
-    /// Cargo features to enable (e.g., "feat1,feat2")
+    ///  Cargo features to enable (e.g., "feat1,feat2")
     pub features: Option<String>,
-    /// Run in release mode
+    ///  Run in release mode
     pub release: Option<bool>,
-    /// Extra flags passed to cargo run (before --)
+    ///  Extra flags passed to cargo run (before --)
     pub extra_args: Option<String>,
-    /// Arguments passed to the binary (after --)
+    ///  Arguments passed to the binary (after --)
     pub args: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ProfileParams {
-    /// Crate directory name (e.g., "verus-geometry", "verus-topology")
+    ///  Crate directory name (e.g., "verus-geometry", "verus-topology")
     pub crate_name: String,
-    /// Optional: profile only this module. Accepts a file path or module path.
+    ///  Optional: profile only this module. Accepts a file path or module path.
     pub module: Option<String>,
-    /// Number of top functions to show (default: 25)
+    ///  Number of top functions to show (default: 25)
     pub top_n: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DependencyParams {
-    /// Function name to find dependencies for
+    ///  Function name to find dependencies for
     pub name: String,
-    /// Direction: "callers" (who calls this function) or "callees" (what this function calls). Default: "callers"
+    ///  Direction: "callers" (who calls this function) or "callees" (what this function calls). Default: "callers"
     pub direction: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ContextActivateParams {
-    /// Context name to activate or create. Omit to list recent contexts.
+    ///  Context name to activate or create. Omit to list recent contexts.
     pub name: Option<String>,
 }
 
-// --- Unified search tool params (standalone mode only) ---
+//  --- Unified search tool params (standalone mode only) ---
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FindParams {
-    /// Search query — name substring, clause/body content, module path, etc.
+    ///  Search query — name substring, clause/body content, module path, etc.
     pub query: Option<String>,
-    /// Exact name for lookup, source view, trait search, module browsing, or dependencies
+    ///  Exact name for lookup, source view, trait search, module browsing, or dependencies
     pub name: Option<String>,
-    /// Multiple names for batch lookup (max 10)
+    ///  Multiple names for batch lookup (max 10)
     pub names: Option<Vec<String>>,
-    /// Search scope (omit for name search/lookup):
-    /// "ensures", "requires", "body", "doc" — search clause/body/doc content
-    /// "types" — search structs/enums by name
-    /// "signature" — search by param_type/return_type/type_bound
-    /// "trait" — trait definition + implementors
-    /// "module" — browse module contents
-    /// "modules" — list all modules
-    /// "dependencies" — callers/callees (set direction)
-    /// "stats" — index statistics
-    /// "source" — full source code of a function
+    ///  Search scope (omit for name search/lookup):
+    ///  "ensures", "requires", "body", "doc" — search clause/body/doc content
+    ///  "types" — search structs/enums by name
+    ///  "signature" — search by param_type/return_type/type_bound
+    ///  "trait" — trait definition + implementors
+    ///  "module" — browse module contents
+    ///  "modules" — list all modules
+    ///  "dependencies" — callers/callees (set direction)
+    ///  "stats" — index statistics
+    ///  "source" — full source code of a function
     pub scope: Option<String>,
-    /// Filter by function kind: "spec", "proof", "exec"
+    ///  Filter by function kind: "spec", "proof", "exec"
     pub kind: Option<String>,
-    /// Filter by crate name
+    ///  Filter by crate name
     pub crate_name: Option<String>,
-    /// Filter by module path substring
+    ///  Filter by module path substring
     pub module: Option<String>,
-    /// For signature search: match parameter types
+    ///  For signature search: match parameter types
     pub param_type: Option<String>,
-    /// For signature search: match return type
+    ///  For signature search: match return type
     pub return_type: Option<String>,
-    /// For signature search: match type parameter bounds
+    ///  For signature search: match type parameter bounds
     pub type_bound: Option<String>,
-    /// For dependencies: "callers" (default) or "callees"
+    ///  For dependencies: "callers" (default) or "callees"
     pub direction: Option<String>,
-    /// Return full signatures with requires/ensures
+    ///  Return full signatures with requires/ensures
     #[serde(default)]
     pub details: bool,
-    /// Only show trait axioms/methods
+    ///  Only show trait axioms/methods
     #[serde(default)]
     pub trait_only: bool,
-    /// Max results (default 50, or 10 when details=true)
+    ///  Max results (default 50, or 10 when details=true)
     pub limit: Option<usize>,
-    /// Skip first N results for pagination
+    ///  Skip first N results for pagination
     pub offset: Option<usize>,
 }
 
-// --- Code editing tool params (standalone mode only) ---
+//  --- Code editing tool params (standalone mode only) ---
 
-/// Structured function definition. Provide EITHER `source` (raw source code)
-/// OR the structured fields (name, kind, params, body, etc.) — not both.
+///  Structured function definition. Provide EITHER `source` (raw source code)
+///  OR the structured fields (name, kind, params, body, etc.) — not both.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct FnSpec {
-    /// Raw source code of the function. If provided, all other fields are ignored.
+    ///  Raw source code of the function. If provided, all other fields are ignored.
     pub source: Option<String>,
-    /// Function name (required when not using raw source)
+    ///  Function name (required when not using raw source)
     pub name: Option<String>,
-    /// Function kind: "spec", "proof", "exec", or omit for regular fn
+    ///  Function kind: "spec", "proof", "exec", or omit for regular fn
     pub kind: Option<String>,
-    /// Visibility: "pub", "pub(crate)", or omit for private
+    ///  Visibility: "pub", "pub(crate)", or omit for private
     pub visibility: Option<String>,
-    /// Whether this is an `open` spec fn
+    ///  Whether this is an `open` spec fn
     #[serde(default)]
     pub open: bool,
-    /// Generic type parameters, e.g. "<T: Ring>"
+    ///  Generic type parameters, e.g. "<T: Ring>"
     pub type_params: Option<String>,
-    /// Parameter list including parens, e.g. "(a: nat, b: nat)"
+    ///  Parameter list including parens, e.g. "(a: nat, b: nat)"
     pub params: Option<String>,
-    /// Return type, e.g. "bool" or "(nat, nat)"
+    ///  Return type, e.g. "bool" or "(nat, nat)"
     pub return_type: Option<String>,
-    /// Requires clauses (each is one predicate)
+    ///  Requires clauses (each is one predicate)
     pub requires: Option<Vec<String>>,
-    /// Ensures clauses (each is one predicate)
+    ///  Ensures clauses (each is one predicate)
     pub ensures: Option<Vec<String>>,
-    /// Decreases clause, e.g. "n"
+    ///  Decreases clause, e.g. "n"
     pub decreases: Option<String>,
-    /// Function body (content inside `{ }`). Omit for signature-only (trait methods).
+    ///  Function body (content inside `{ }`). Omit for signature-only (trait methods).
     pub body: Option<String>,
-    /// Doc comment text (will be prefixed with `///` per line)
+    ///  Doc comment text (will be prefixed with `///` per line)
     pub doc: Option<String>,
-    /// Attributes, e.g. ["#[verifier::external_body]"]
+    ///  Attributes, e.g. ["#[verifier::external_body]"]
     pub annotations: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadParams {
-    /// File or directory path. Omit for current directory.
+    ///  File or directory path. Omit for current directory.
     pub path: Option<String>,
-    /// Function name to read full source (requires path to be a file).
+    ///  Function name to read full source (requires path to be a file).
     pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddParams {
-    /// Absolute path to the file
+    ///  Absolute path to the file
     pub file: String,
-    /// Use path to add (e.g., "vstd::prelude::*" or short name like "Ring" for auto-resolve)
+    ///  Use path to add (e.g., "vstd::prelude::*" or short name like "Ring" for auto-resolve)
     pub use_path: Option<String>,
-    /// Module name to add as `pub mod <name>;`
+    ///  Module name to add as `pub mod <name>;`
     pub mod_name: Option<String>,
-    /// Function definition (structured or raw source) — used when use_path and mod_name are both absent
+    ///  Function definition (structured or raw source) — used when use_path and mod_name are both absent
     #[serde(flatten)]
     pub spec: FnSpec,
-    /// Insert after this function name (otherwise appends)
+    ///  Insert after this function name (otherwise appends)
     pub after: Option<String>,
-    /// Trait or impl name to insert the method into (e.g., "MinimalPoly" or "Ring for SpecFieldExt")
+    ///  Trait or impl name to insert the method into (e.g., "MinimalPoly" or "Ring for SpecFieldExt")
     pub inside: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RemoveParams {
-    /// Absolute path to the file
+    ///  Absolute path to the file
     pub file: String,
-    /// Function name to remove (or "Type::method" for impl methods)
+    ///  Function name to remove (or "Type::method" for impl methods)
     pub name: Option<String>,
-    /// Use path substring to match and remove
+    ///  Use path substring to match and remove
     pub use_path: Option<String>,
-    /// Module name to remove (removes `pub mod <name>;` or `mod <name>;`)
+    ///  Module name to remove (removes `pub mod <name>;` or `mod <name>;`)
     pub mod_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EditParams {
-    /// Absolute path to the file
+    ///  Absolute path to the file
     pub file: String,
-    /// Function name (or "Type::method") to scope the edit. Omit to edit use statements.
+    ///  Function name (or "Type::method") to scope the edit. Omit to edit use statements.
     pub name: Option<String>,
-    /// Exact string to find within the function (must be unique within it)
+    ///  Exact string to find within the function (must be unique within it)
     pub old_string: String,
-    /// Replacement string
+    ///  Replacement string
     pub new_string: String,
 }
 
@@ -453,8 +453,8 @@ fn replay_items(idx: &Index, items: &[String]) -> String {
     text
 }
 
-/// Validate and resolve a module path for --verify-module.
-/// Returns Ok(flag_string) or Err(error_message).
+///  Validate and resolve a module path for --verify-module.
+///  Returns Ok(flag_string) or Err(error_message).
 fn validate_module(crate_name: &str, module: &str, crate_dir: &std::path::Path) -> Result<String, String> {
     let trimmed = module.trim();
     if trimmed.contains('>') || trimmed.is_empty() {
@@ -464,7 +464,7 @@ fn validate_module(crate_name: &str, module: &str, crate_dir: &std::path::Path) 
         ));
     }
 
-    // If it looks like a file path, check it exists
+    //  If it looks like a file path, check it exists
     if trimmed.contains('/') || trimmed.ends_with(".rs") {
         let file_path = if trimmed.starts_with("src/") {
             crate_dir.join(trimmed)
@@ -472,7 +472,7 @@ fn validate_module(crate_name: &str, module: &str, crate_dir: &std::path::Path) 
             crate_dir.join("src").join(trimmed)
         };
         if !file_path.exists() {
-            // Collect all .rs files for fuzzy suggestions
+            //  Collect all .rs files for fuzzy suggestions
             let src_dir = crate_dir.join("src");
             let mut rs_files = Vec::new();
             if let Ok(entries) = walkdir_rs_files(&src_dir) {
@@ -503,7 +503,7 @@ fn validate_module(crate_name: &str, module: &str, crate_dir: &std::path::Path) 
     Ok(format!("--verify-module {} ", to_verify_module(crate_name, trimmed)))
 }
 
-/// Walk src/ directory for .rs files, returning paths relative to src/.
+///  Walk src/ directory for .rs files, returning paths relative to src/.
 fn walkdir_rs_files(src_dir: &std::path::Path) -> Result<Vec<String>, std::io::Error> {
     let mut files = Vec::new();
     fn walk(dir: &std::path::Path, prefix: &str, files: &mut Vec<String>) {
@@ -525,7 +525,7 @@ fn walkdir_rs_files(src_dir: &std::path::Path) -> Result<Vec<String>, std::io::E
     Ok(files)
 }
 
-/// Simple Levenshtein distance for short strings.
+///  Simple Levenshtein distance for short strings.
 fn strsim_distance(a: &str, b: &str) -> usize {
     let a = a.as_bytes();
     let b = b.as_bytes();
@@ -543,13 +543,13 @@ fn strsim_distance(a: &str, b: &str) -> usize {
     prev[n]
 }
 
-/// Convert a file path or module path to a Verus --verify-module argument.
-/// Verus uses crate-local module paths (e.g., "runtime::polygon", not "verus_geometry::runtime::polygon").
-/// Accepts: "src/runtime/polygon.rs", "runtime/polygon.rs", "runtime::polygon"
+///  Convert a file path or module path to a Verus --verify-module argument.
+///  Verus uses crate-local module paths (e.g., "runtime::polygon", not "verus_geometry::runtime::polygon").
+///  Accepts: "src/runtime/polygon.rs", "runtime/polygon.rs", "runtime::polygon"
 fn to_verify_module(crate_name: &str, input: &str) -> String {
     let crate_mod = crate_name.replace('-', "_");
 
-    // If it already looks like a module path (has :: and no /), strip crate prefix if present
+    //  If it already looks like a module path (has :: and no /), strip crate prefix if present
     if input.contains("::") && !input.contains('/') {
         let stripped = input
             .strip_prefix(&format!("{}::", crate_mod))
@@ -558,7 +558,7 @@ fn to_verify_module(crate_name: &str, input: &str) -> String {
         return stripped.to_string();
     }
 
-    // File path: strip src/ prefix and .rs suffix, convert / to ::
+    //  File path: strip src/ prefix and .rs suffix, convert / to ::
     let rel = input.strip_prefix("src/").unwrap_or(input);
     let rel = rel.strip_suffix(".rs").unwrap_or(rel);
     let module = rel
@@ -572,17 +572,17 @@ fn to_verify_module(crate_name: &str, input: &str) -> String {
     }
 }
 
-/// If the body field contains a full function (with signature, requires/ensures),
-/// assemble the structured fields into a signature and wrap the body to form a
-/// complete function, then parse with tree-sitter. If it parses as a valid function,
-/// use it as raw source. This handles models that dump everything into the body field.
+///  If the body field contains a full function (with signature, requires/ensures),
+///  assemble the structured fields into a signature and wrap the body to form a
+///  complete function, then parse with tree-sitter. If it parses as a valid function,
+///  use it as raw source. This handles models that dump everything into the body field.
 fn normalize_fn_spec(spec: &FnSpec) -> FnSpec {
     let body = match spec.body {
         Some(ref b) => b,
         None => return spec.clone(),
     };
 
-    // Quick check: does the body contain function-like keywords at the start?
+    //  Quick check: does the body contain function-like keywords at the start?
     let trimmed = body.trim_start();
     let has_fn_sig = trimmed.contains("fn ");
     let has_clauses = trimmed.starts_with("requires") || trimmed.starts_with("ensures");
@@ -591,11 +591,11 @@ fn normalize_fn_spec(spec: &FnSpec) -> FnSpec {
         return spec.clone();
     }
 
-    // Strategy: assemble a candidate function from the structured fields + body,
-    // wrapping body in verus! { } so tree-sitter can parse it.
-    // If body contains a full function, try parsing it directly first.
+    //  Strategy: assemble a candidate function from the structured fields + body,
+    //  wrapping body in verus! { } so tree-sitter can parse it.
+    //  If body contains a full function, try parsing it directly first.
     if has_fn_sig {
-        // Body might be an entire function definition — try parsing it directly
+        //  Body might be an entire function definition — try parsing it directly
         let candidate = format!("verus! {{\n{}\n}}", body);
         if let Ok(items) = editor::parse_file(&candidate) {
             if !items.functions.is_empty() {
@@ -609,8 +609,8 @@ fn normalize_fn_spec(spec: &FnSpec) -> FnSpec {
         }
     }
 
-    // Body starts with requires/ensures but no fn signature —
-    // build the signature from structured fields, prepend it, then parse
+    //  Body starts with requires/ensures but no fn signature —
+    //  build the signature from structured fields, prepend it, then parse
     if has_clauses {
         let mut sig = String::new();
         if let Some(ref vis) = spec.visibility {
@@ -635,7 +635,7 @@ fn normalize_fn_spec(spec: &FnSpec) -> FnSpec {
             sig.push_str(" -> ");
             sig.push_str(ret);
         }
-        // Body has requires/ensures — check if it also has a { } block at the end
+        //  Body has requires/ensures — check if it also has a { } block at the end
         let candidate = format!("verus! {{\n{}\n{}\n}}", sig, body);
         if let Ok(items) = editor::parse_file(&candidate) {
             if !items.functions.is_empty() {
@@ -652,12 +652,12 @@ fn normalize_fn_spec(spec: &FnSpec) -> FnSpec {
     spec.clone()
 }
 
-/// Assemble function source code from a FnSpec. Returns the raw `source` if
-/// provided, otherwise builds it from structured fields.
+///  Assemble function source code from a FnSpec. Returns the raw `source` if
+///  provided, otherwise builds it from structured fields.
 fn assemble_fn(spec: &FnSpec) -> Result<String, String> {
     let spec = &normalize_fn_spec(spec);
 
-    // Raw source shortcut
+    //  Raw source shortcut
     if let Some(ref src) = spec.source {
         return Ok(src.clone());
     }
@@ -666,14 +666,14 @@ fn assemble_fn(spec: &FnSpec) -> Result<String, String> {
 
     let mut out = String::new();
 
-    // Doc comment
+    //  Doc comment
     if let Some(ref doc) = spec.doc {
         for line in doc.lines() {
-            out.push_str(&format!("/// {}\n", line));
+            out.push_str(&format!("///  {}\n", line));
         }
     }
 
-    // Annotations
+    //  Annotations
     if let Some(ref annotations) = spec.annotations {
         for ann in annotations {
             if ann.starts_with("#[") {
@@ -685,7 +685,7 @@ fn assemble_fn(spec: &FnSpec) -> Result<String, String> {
         }
     }
 
-    // Signature line: [vis] [open] [kind] fn name[type_params](params) [-> ret]
+    //  Signature line: [vis] [open] [kind] fn name[type_params](params) [-> ret]
     let mut sig = String::new();
     if let Some(ref vis) = spec.visibility {
         sig.push_str(vis);
@@ -711,7 +711,7 @@ fn assemble_fn(spec: &FnSpec) -> Result<String, String> {
     }
     out.push_str(&sig);
 
-    // Requires
+    //  Requires
     if let Some(ref reqs) = spec.requires {
         if !reqs.is_empty() {
             out.push_str("\n    requires\n");
@@ -726,7 +726,7 @@ fn assemble_fn(spec: &FnSpec) -> Result<String, String> {
         }
     }
 
-    // Ensures
+    //  Ensures
     if let Some(ref enss) = spec.ensures {
         if !enss.is_empty() {
             out.push_str("    ensures\n");
@@ -741,12 +741,12 @@ fn assemble_fn(spec: &FnSpec) -> Result<String, String> {
         }
     }
 
-    // Decreases
+    //  Decreases
     if let Some(ref dec) = spec.decreases {
         out.push_str(&format!("    decreases {},\n", dec));
     }
 
-    // Body
+    //  Body
     if let Some(ref body) = spec.body {
         out.push_str("{\n");
         for line in body.lines() {
@@ -760,7 +760,7 @@ fn assemble_fn(spec: &FnSpec) -> Result<String, String> {
     Ok(out)
 }
 
-/// Run a bash script with a 10-minute timeout. Returns the process output.
+///  Run a bash script with a 10-minute timeout. Returns the process output.
 async fn run_bash_script(
     script: &str,
     crate_dir: &std::path::Path,
@@ -784,27 +784,27 @@ async fn run_bash_script(
     }
 }
 
-/// Build the bash script for `cargo verus verify` (check mode).
+///  Build the bash script for `cargo verus verify` (check mode).
 ///
-/// When `use_json` is true, adds `--message-format=json` for structured diagnostics.
-/// When false (raw mode), omits it so output is human-readable.
+///  When `use_json` is true, adds `--message-format=json` for structured diagnostics.
+///  When false (raw mode), omits it so output is human-readable.
 ///
-/// When `--verify-module` is used, a silent pre-build caches dependencies first.
-/// All pre-build output is suppressed to avoid leaking stale verification counts.
+///  When `--verify-module` is used, a silent pre-build caches dependencies first.
+///  All pre-build output is suppressed to avoid leaking stale verification counts.
 fn build_check_script(
     default_verus_root: &std::path::Path,
     pkg: &str,
     module_flag: &str,
     use_json: bool,
 ) -> String {
-    // When --verify-module is used, we must pre-build dependencies without the flag.
-    // Flags after `--` are passed to ALL rustc invocations (including deps), so
-    // --verify-module would cause Verus to fail on dependency crates that don't have
-    // the specified module. Pre-building caches deps so the real verify only compiles
-    // the target crate.
+    //  When --verify-module is used, we must pre-build dependencies without the flag.
+    //  Flags after `--` are passed to ALL rustc invocations (including deps), so
+    //  --verify-module would cause Verus to fail on dependency crates that don't have
+    //  the specified module. Pre-building caches deps so the real verify only compiles
+    //  the target crate.
     //
-    // All pre-build output (stdout+stderr) is suppressed to prevent its verification
-    // summary from leaking into the parsed output.
+    //  All pre-build output (stdout+stderr) is suppressed to prevent its verification
+    //  summary from leaking into the parsed output.
     let prebuild = if module_flag.contains("--verify-module") {
         format!(
             "cargo verus verify --manifest-path Cargo.toml -p {pkg} -- --no-verify --triggers-mode silent >/dev/null 2>&1 || true\n",
@@ -836,8 +836,8 @@ export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
     )
 }
 
-/// Check if dependency crates were compiled during a cargo verus run.
-/// Looks for "Compiling <crate>" lines in stderr where <crate> is not the target.
+///  Check if dependency crates were compiled during a cargo verus run.
+///  Looks for "Compiling <crate>" lines in stderr where <crate> is not the target.
 fn has_dependency_compilation(stderr: &str, target_crate: &str) -> bool {
     let target_underscore = target_crate.replace('-', "_");
     for line in stderr.lines() {
@@ -852,7 +852,7 @@ fn has_dependency_compilation(stderr: &str, target_crate: &str) -> bool {
     false
 }
 
-/// Build the bash script for `cargo-verus build`.
+///  Build the bash script for `cargo-verus build`.
 fn build_build_script(
     default_verus_root: &std::path::Path,
     pkg: &str,
@@ -886,10 +886,10 @@ export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
     )
 }
 
-/// Build the bash script for `cargo-verus run`.
+///  Build the bash script for `cargo-verus run`.
 ///
-/// cargo-verus doesn't have a `run` subcommand, so we build first with
-/// `cargo-verus build`, then run the resulting binary directly.
+///  cargo-verus doesn't have a `run` subcommand, so we build first with
+///  `cargo-verus build`, then run the resulting binary directly.
 fn build_run_script(
     default_verus_root: &std::path::Path,
     pkg: &str,
@@ -968,15 +968,15 @@ exec "$BIN_PATH" {bin_args} 2>&1
     )
 }
 
-/// Build the bash preamble for `cargo verus verify` (profile mode).
-/// Returns everything up to (and including) the `python3 ... <<'PYEOF'` line.
+///  Build the bash preamble for `cargo verus verify` (profile mode).
+///  Returns everything up to (and including) the `python3 ... <<'PYEOF'` line.
 fn build_profile_preamble(
     default_verus_root: &std::path::Path,
     pkg: &str,
     module_flag: &str,
     top_n: usize,
 ) -> String {
-    // Pre-build deps when --verify-module is used (same reason as build_check_script).
+    //  Pre-build deps when --verify-module is used (same reason as build_check_script).
     let prebuild = if module_flag.contains("--verify-module") {
         format!(
             "cargo verus verify --manifest-path Cargo.toml -p {pkg} -- --no-verify --triggers-mode silent >/dev/null 2>&1 || true\n\n",
@@ -1016,7 +1016,7 @@ python3 - "$JSON_FILE" "{top_n}" <<'PYEOF'
     )
 }
 
-/// Format "Did you mean:" suggestions, or empty string if none found.
+///  Format "Did you mean:" suggestions, or empty string if none found.
 fn format_did_you_mean(idx: &Index, query: &str) -> String {
     let suggestions = idx.suggest(query, 10);
     if suggestions.is_empty() {
@@ -1041,8 +1041,8 @@ fn parse_kind(s: &str) -> Option<FnKind> {
     }
 }
 
-/// Format a result count line with pagination info.
-/// "5 results", "5 of 23 results", or "results 51-75 of 100".
+///  Format a result count line with pagination info.
+///  "5 results", "5 of 23 results", or "results 51-75 of 100".
 fn format_count(shown: usize, total: usize, offset: usize) -> String {
     if offset == 0 {
         if shown < total {
@@ -1076,15 +1076,15 @@ impl VerusMcpServer {
         }
     }
 
-    /// Wait for the initial index build to complete (no-op once ready).
+    ///  Wait for the initial index build to complete (no-op once ready).
     async fn wait_ready(&self) {
         let mut rx = self.ready.clone();
-        // wait_for returns immediately if the value already satisfies the predicate
+        //  wait_for returns immediately if the value already satisfies the predicate
         let _ = rx.wait_for(|&v| v).await;
     }
 
-    /// Check if a context is active. Returns a gate message if not.
-    /// In standalone mode, always returns None (no context required).
+    ///  Check if a context is active. Returns a gate message if not.
+    ///  In standalone mode, always returns None (no context required).
     fn require_context(&self) -> Option<String> {
         if crate::STANDALONE.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
@@ -1107,9 +1107,9 @@ impl VerusMcpServer {
         Some(msg)
     }
 
-    /// Capture item names into the active context (no-op if no context active).
-    /// Duplicates are moved to the end (most recently fetched last).
-    /// In standalone mode, this is a complete no-op.
+    ///  Capture item names into the active context (no-op if no context active).
+    ///  Duplicates are moved to the end (most recently fetched last).
+    ///  In standalone mode, this is a complete no-op.
     fn capture_names(&self, names: impl IntoIterator<Item = impl AsRef<str>>) {
         if crate::STANDALONE.load(std::sync::atomic::Ordering::Relaxed) { return; }
         let mut ctx = self.context.lock().unwrap();
@@ -1126,7 +1126,7 @@ impl VerusMcpServer {
                 changed = true;
             }
         }
-        // Trim to last 100 items to avoid context window limits on replay
+        //  Trim to last 100 items to avoid context window limits on replay
         const MAX_CONTEXT_ITEMS: usize = 80;
         if ctx.items.len() > MAX_CONTEXT_ITEMS {
             let drain_count = ctx.items.len() - MAX_CONTEXT_ITEMS;
@@ -1157,7 +1157,7 @@ impl VerusMcpServer {
         };
         drop(ctx_guard);
 
-        // Mark as listed so context_activate is unblocked
+        //  Mark as listed so context_activate is unblocked
         self.context.lock().unwrap().listed = true;
 
         if recent.is_empty() && active_info.is_empty() {
@@ -1190,7 +1190,7 @@ impl VerusMcpServer {
                 "Context management is not available in standalone mode. All tools work directly without activating a context."
             )]));
         }
-        // Gate: must call context_list first
+        //  Gate: must call context_list first
         {
             let ctx = self.context.lock().unwrap();
             if !ctx.listed {
@@ -1211,7 +1211,7 @@ impl VerusMcpServer {
 
         match load_context(&name) {
             Some(cf) => {
-                // Resume: load items, set active
+                //  Resume: load items, set active
                 let items = cf.items;
                 let item_count = items.len();
 
@@ -1237,7 +1237,7 @@ impl VerusMcpServer {
                 Ok(CallToolResult::success(vec![Content::text(msg)]))
             }
             None => {
-                // Create new context
+                //  Create new context
                 {
                     let mut ctx = self.context.lock().unwrap();
                     ctx.active = Some(name.clone());
@@ -1282,7 +1282,7 @@ impl VerusMcpServer {
             limit,
         );
 
-        // Auto-capture to context when 1-2 results
+        //  Auto-capture to context when 1-2 results
         if result.total_count >= 1 && result.total_count <= 2 {
             self.capture_names(result.items.iter().map(|e| &e.name));
         }
@@ -1294,12 +1294,12 @@ impl VerusMcpServer {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // When substring results are few and no offset, append fuzzy matches
+        //  When substring results are few and no offset, append fuzzy matches
         if offset == 0 && result.total_count < 5 {
             let fuzzy_limit = if result.items.is_empty() { 10 } else { DEFAULT_RESULTS.saturating_sub(result.items.len()) };
             if fuzzy_limit > 0 {
                 let fuzzy = idx.search_fuzzy(&params.query, fuzzy_limit);
-                // Filter out items already in substring results
+                //  Filter out items already in substring results
                 let existing: std::collections::HashSet<(&str, usize)> = result
                     .items
                     .iter()
@@ -1322,7 +1322,7 @@ impl VerusMcpServer {
         if result.items.is_empty() && text.trim().is_empty() {
             let mut msg = format!("No results for '{}'", params.query);
 
-            // Note active filters and check if removing them helps
+            //  Note active filters and check if removing them helps
             let has_filters = params.kind.is_some()
                 || params.crate_name.is_some()
                 || params.module.is_some()
@@ -1392,7 +1392,7 @@ impl VerusMcpServer {
             return Ok(CallToolResult::success(vec![Content::text(text)]));
         }
 
-        // Fallback: search types
+        //  Fallback: search types
         let type_results = idx.lookup_type(&params.name);
 
         if !type_results.is_empty() {
@@ -1437,22 +1437,22 @@ impl VerusMcpServer {
 
         let mut sections = Vec::new();
         for e in &fn_results {
-            // Read source lines from disk
+            //  Read source lines from disk
             match std::fs::read_to_string(&e.file_path) {
                 Ok(contents) => {
                     let lines: Vec<&str> = contents.lines().collect();
-                    let start = e.line.saturating_sub(1); // 1-indexed to 0-indexed
+                    let start = e.line.saturating_sub(1); //  1-indexed to 0-indexed
                     let end = e.end_line.min(lines.len());
                     let source: String = lines[start..end]
                         .join("\n");
                     sections.push(format!(
-                        "// {}:{}-{}\n{}",
+                        "//  {}:{}-{}\n{}",
                         e.file_path, e.line, e.end_line, source
                     ));
                 }
                 Err(err) => {
                     sections.push(format!(
-                        "// {}:{}-{} (could not read: {})",
+                        "//  {}:{}-{} (could not read: {})",
                         e.file_path, e.line, e.end_line, err
                     ));
                 }
@@ -1546,7 +1546,7 @@ impl VerusMcpServer {
         let kind = params.kind.as_deref().and_then(parse_kind);
         let result = idx.search_ensures(&params.query, params.crate_name.as_deref(), params.module.as_deref(), params.name.as_deref(), kind, offset, limit);
 
-        // Auto-capture to context when 1-2 results
+        //  Auto-capture to context when 1-2 results
         if result.total_count >= 1 && result.total_count <= 2 {
             self.capture_names(result.items.iter().map(|e| &e.name));
         }
@@ -1678,7 +1678,7 @@ impl VerusMcpServer {
         let limit = params.limit.map(|l| l.min(MAX_RESULTS)).unwrap_or(MAX_RESULTS);
         let offset = params.offset.unwrap_or(0);
 
-        // Search both functions and types
+        //  Search both functions and types
         let kind = params.kind.as_deref().and_then(parse_kind);
         let fn_result = idx.search_doc(&params.query, params.crate_name.as_deref(), params.module.as_deref(), params.name.as_deref(), kind, offset, limit);
         let type_result = idx.search_type_doc(&params.query, params.crate_name.as_deref(), params.module.as_deref(), offset, limit);
@@ -1862,11 +1862,11 @@ impl VerusMcpServer {
         let modules = idx.list_modules();
         let total = idx.len() + idx.type_len();
 
-        // Group modules by crate
+        //  Group modules by crate
         let mut crates: std::collections::BTreeMap<String, Vec<(String, usize)>> =
             std::collections::BTreeMap::new();
         for (path, count) in &modules {
-            // module_path is like "verus_algebra::ring_lemmas" — crate is first segment
+            //  module_path is like "verus_algebra::ring_lemmas" — crate is first segment
             let crate_name = path.split("::").next().unwrap_or(path);
             let mod_name = path.splitn(2, "::").nth(1).unwrap_or("(root)");
             crates
@@ -2034,7 +2034,7 @@ impl VerusMcpServer {
                 ))]))
             }
             _ => {
-                // "callers" (default)
+                //  "callers" (default)
                 let callers = idx.find_callers(&params.name);
                 if callers.is_empty() {
                     let mut msg = format!("No callers found for '{}'", params.name);
@@ -2100,8 +2100,8 @@ On success: clean summary. On failure: extracted error diagnostics with function
             None => String::new(),
         };
         let is_raw = params.raw.unwrap_or(false);
-        // raw mode: no JSON, human-readable output
-        // normal mode: JSON for structured diagnostics
+        //  raw mode: no JSON, human-readable output
+        //  normal mode: JSON for structured diagnostics
         let script = build_check_script(
             &default_verus_root, &params.crate_name, &module_flag, !is_raw);
         let output = match run_bash_script(&script, &crate_dir).await {
@@ -2117,16 +2117,16 @@ On success: clean summary. On failure: extracted error diagnostics with function
             )]));
         }
 
-        // Check if dependencies were compiled during this run.
-        // If so, the verification counts may reflect dependency results, not the target.
+        //  Check if dependencies were compiled during this run.
+        //  If so, the verification counts may reflect dependency results, not the target.
         if has_dependency_compilation(&stderr, &params.crate_name) {
-            // Check if the build itself failed (dependency or target)
+            //  Check if the build itself failed (dependency or target)
             let has_build_error = stderr.contains("error[E")
                 || stderr.contains("could not compile")
                 || stdout.contains("error[E");
             if has_build_error {
-                // Build failed — report the error from this run rather than rerunning.
-                // Parse diagnostics to show what went wrong.
+                //  Build failed — report the error from this run rather than rerunning.
+                //  Parse diagnostics to show what went wrong.
                 let diagnostics = Self::parse_json_diagnostics(&stdout, true);
                 if !diagnostics.is_empty() {
                     let annotated = self.annotate_diagnostics(&diagnostics, &params.crate_name);
@@ -2142,8 +2142,8 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 ))]));
             }
 
-            // Dependencies compiled successfully — rerun so deps are cached
-            // and we get counts scoped to the target crate only.
+            //  Dependencies compiled successfully — rerun so deps are cached
+            //  and we get counts scoped to the target crate only.
             let output = match run_bash_script(&script, &crate_dir).await {
                 Ok(output) => output,
                 Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
@@ -2156,10 +2156,10 @@ On success: clean summary. On failure: extracted error diagnostics with function
         self.parse_verus_output(&params.crate_name, &stdout, &stderr, None)
     }
 
-    /// Parse cargo verus output into a structured result.
-    /// stdout contains JSON lines from `--message-format=json` (plus possibly the
-    /// verification summary from the verus compiler's println!).
-    /// stderr contains cargo progress messages and fancy notes.
+    ///  Parse cargo verus output into a structured result.
+    ///  stdout contains JSON lines from `--message-format=json` (plus possibly the
+    ///  verification summary from the verus compiler's println!).
+    ///  stderr contains cargo progress messages and fancy notes.
     fn parse_verus_output(
         &self,
         crate_name: &str,
@@ -2172,19 +2172,19 @@ On success: clean summary. On failure: extracted error diagnostics with function
             regex::Regex::new(r"verification results::\s*(\d+) verified,\s*(\d+) errors")
                 .unwrap();
 
-        // Search both stdout and stderr for the verification summary.
-        // The verus compiler prints it via println! (stdout), but cargo may
-        // route it to either stream depending on message format settings.
-        // Use .last() to get the final (most relevant) match.
+        //  Search both stdout and stderr for the verification summary.
+        //  The verus compiler prints it via println! (stdout), but cargo may
+        //  route it to either stream depending on message format settings.
+        //  Use .last() to get the final (most relevant) match.
         let combined = format!("{}\n{}", stdout, stderr);
         let summary_caps = summary_re.captures_iter(&combined).last();
 
-        // Determine if there are errors to filter warnings
+        //  Determine if there are errors to filter warnings
         let has_errors = summary_caps.as_ref()
             .map(|c| c[2].parse::<usize>().unwrap_or(0) > 0)
             .unwrap_or(false);
 
-        // Parse JSON diagnostics from stdout (suppress warnings when errors exist)
+        //  Parse JSON diagnostics from stdout (suppress warnings when errors exist)
         let diagnostics = Self::parse_json_diagnostics(stdout, has_errors);
 
         if let Some(caps) = &summary_caps {
@@ -2198,7 +2198,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 ))]));
             }
 
-            // We have errors — use JSON diagnostics
+            //  We have errors — use JSON diagnostics
             if !diagnostics.is_empty() {
                 let annotated = self.annotate_diagnostics(&diagnostics, crate_name);
                 let mut text = format!("{}{}", note_prefix, annotated.join("\n\n"));
@@ -2209,7 +2209,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 return Ok(CallToolResult::success(vec![Content::text(text)]));
             }
 
-            // JSON parse failed — extract rendered text from JSON lines, fall back to stderr
+            //  JSON parse failed — extract rendered text from JSON lines, fall back to stderr
             let rendered = Self::extract_rendered_text(stdout);
             let fallback = if !rendered.is_empty() { rendered } else { stderr.to_string() };
             let mut text = format!("{}{}", note_prefix, fallback);
@@ -2220,7 +2220,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
             return Ok(CallToolResult::success(vec![Content::text(text)]));
         }
 
-        // No verification summary — likely a build error.
+        //  No verification summary — likely a build error.
         if !diagnostics.is_empty() {
             let annotated = self.annotate_diagnostics(&diagnostics, crate_name);
             return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -2230,7 +2230,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
             ))]));
         }
 
-        // Fallback: last 50 lines of stderr
+        //  Fallback: last 50 lines of stderr
         let lines: Vec<&str> = stderr.lines().collect();
         let start = lines.len().saturating_sub(50);
         let tail = lines[start..].join("\n");
@@ -2240,8 +2240,8 @@ On success: clean summary. On failure: extracted error diagnostics with function
         ))]))
     }
 
-    /// Extract human-readable `rendered` text from JSON stdout lines.
-    /// Used as fallback when full JSON diagnostic parsing fails.
+    ///  Extract human-readable `rendered` text from JSON stdout lines.
+    ///  Used as fallback when full JSON diagnostic parsing fails.
     fn extract_rendered_text(stdout: &str) -> String {
         let mut rendered_parts = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -2268,9 +2268,9 @@ On success: clean summary. On failure: extracted error diagnostics with function
         rendered_parts.join("\n\n")
     }
 
-    /// Parse JSON diagnostic messages from `--message-format=json` stdout.
-    /// Returns only error/warning/note diagnostics (filters out artifacts, build-script, etc.).
-    /// When `errors_only` is true, suppresses warnings and notes to reduce noise.
+    ///  Parse JSON diagnostic messages from `--message-format=json` stdout.
+    ///  Returns only error/warning/note diagnostics (filters out artifacts, build-script, etc.).
+    ///  When `errors_only` is true, suppresses warnings and notes to reduce noise.
     fn parse_json_diagnostics(stdout: &str, errors_only: bool) -> Vec<DiagMessage> {
         let mut diagnostics = Vec::new();
         let mut seen_rendered = std::collections::HashSet::new();
@@ -2289,18 +2289,18 @@ On success: clean summary. On failure: extracted error diagnostics with function
             let Some(msg) = cargo_line.message else {
                 continue;
             };
-            // Skip noise
+            //  Skip noise
             if msg.level == "failure-note" {
                 continue;
             }
             if msg.message.starts_with("aborting due to") {
                 continue;
             }
-            // When we know there are errors, skip warnings/notes to reduce noise
+            //  When we know there are errors, skip warnings/notes to reduce noise
             if errors_only && msg.level != "error" {
                 continue;
             }
-            // Deduplicate by rendered text
+            //  Deduplicate by rendered text
             if let Some(ref rendered) = msg.rendered {
                 if !seen_rendered.insert(rendered.clone()) {
                     continue;
@@ -2311,8 +2311,8 @@ On success: clean summary. On failure: extracted error diagnostics with function
         diagnostics
     }
 
-    /// Annotate diagnostics with function context: show function source with
-    /// error messages inlined. Groups multiple errors in the same function.
+    ///  Annotate diagnostics with function context: show function source with
+    ///  error messages inlined. Groups multiple errors in the same function.
     fn annotate_diagnostics(
         &self,
         diagnostics: &[DiagMessage],
@@ -2321,24 +2321,24 @@ On success: clean summary. On failure: extracted error diagnostics with function
         let idx = self.index.read().ok();
         let workspace = indexer::find_workspace_root();
 
-        // Cache file contents to avoid re-reading
+        //  Cache file contents to avoid re-reading
         let mut file_cache: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
 
-        // Group errors by function key (file_path, fn_line, fn_end_line).
-        // Preserve insertion order with Vec of unique keys.
+        //  Group errors by function key (file_path, fn_line, fn_end_line).
+        //  Preserve insertion order with Vec of unique keys.
         let mut fn_keys: Vec<(String, usize, usize)> = Vec::new();
-        // Map: fn_key → Vec<(err_line_0indexed, err_msg)>
+        //  Map: fn_key → Vec<(err_line_0indexed, err_msg)>
         let mut fn_errors: std::collections::HashMap<(String, usize, usize), Vec<(usize, String)>> =
             std::collections::HashMap::new();
-        // Diagnostics that couldn't be associated with a function
+        //  Diagnostics that couldn't be associated with a function
         let mut orphan_rendered: Vec<String> = Vec::new();
 
         for diag in diagnostics {
-            // Find the primary span
+            //  Find the primary span
             let primary_span = diag.spans.iter().find(|s| s.is_primary);
             let Some(span) = primary_span else {
-                // No primary span — use rendered text
+                //  No primary span — use rendered text
                 if let Some(ref rendered) = diag.rendered {
                     orphan_rendered.push(rendered.trim().to_string());
                 } else {
@@ -2361,7 +2361,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
             };
 
             let err_msg = format!("{}: {}", diag.level, diag.message);
-            let err_line_0idx = primary_line.saturating_sub(1); // 0-indexed
+            let err_line_0idx = primary_line.saturating_sub(1); //  0-indexed
             let key = (entry.file_path.clone(), entry.line, entry.end_line);
             if !fn_errors.contains_key(&key) {
                 fn_keys.push(key.clone());
@@ -2371,11 +2371,11 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 .or_default()
                 .push((err_line_0idx, err_msg));
 
-            // Also include secondary spans as additional context
+            //  Also include secondary spans as additional context
             for sec_span in diag.spans.iter().filter(|s| !s.is_primary) {
                 if let Some(ref label) = sec_span.label {
                     let sec_file = format!("{}/{}", crate_name, sec_span.file_name);
-                    // Only include if it's in the same function
+                    //  Only include if it's in the same function
                     if sec_file == qualified_file
                         && sec_span.line_start >= entry.line
                         && sec_span.line_start <= entry.end_line
@@ -2398,8 +2398,8 @@ On success: clean summary. On failure: extracted error diagnostics with function
             let lines = file_cache
                 .entry(file_path.clone())
                 .or_insert_with(|| {
-                    // file_path is a display path like "verus-bigint/src/foo.rs";
-                    // resolve to absolute using workspace root
+                    //  file_path is a display path like "verus-bigint/src/foo.rs";
+                    //  resolve to absolute using workspace root
                     let abs_path = workspace.join(file_path);
                     std::fs::read_to_string(&abs_path)
                         .unwrap_or_default()
@@ -2415,11 +2415,11 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 continue;
             }
 
-            let fn_start = fn_line.saturating_sub(1); // 0-indexed
+            let fn_start = fn_line.saturating_sub(1); //  0-indexed
             let fn_end = fn_end_line.min(lines.len());
             let fn_len = fn_end.saturating_sub(fn_start);
 
-            // Collect error lines into a map: line_idx → Vec<msg>
+            //  Collect error lines into a map: line_idx → Vec<msg>
             let mut err_map: std::collections::BTreeMap<usize, Vec<&str>> =
                 std::collections::BTreeMap::new();
             for (err_idx, msg) in errs {
@@ -2429,14 +2429,14 @@ On success: clean summary. On failure: extracted error diagnostics with function
             let mut out = Vec::new();
 
             if fn_len <= 100 {
-                // Short function: show entire source with errors inlined
+                //  Short function: show entire source with errors inlined
                 for i in fn_start..fn_end {
                     out.push(lines[i].clone());
                     if let Some(msgs) = err_map.get(&i) {
                         let indent = lines[i].len() - lines[i].trim_start().len();
                         for msg in msgs {
                             out.push(format!(
-                                "{}// ^^^ {}",
+                                "{}//  ^^^ {}",
                                 " ".repeat(indent),
                                 msg
                             ));
@@ -2444,9 +2444,9 @@ On success: clean summary. On failure: extracted error diagnostics with function
                     }
                 }
             } else {
-                // Long function: show signature + context windows around each error
+                //  Long function: show signature + context windows around each error
 
-                // Find where the body starts (first `{` line)
+                //  Find where the body starts (first `{` line)
                 let mut body_start = fn_start;
                 for i in fn_start..fn_end {
                     if lines[i].contains('{') {
@@ -2455,7 +2455,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
                     }
                 }
 
-                // Build merged context windows around all error lines
+                //  Build merged context windows around all error lines
                 let ctx = 3usize;
                 let mut windows: Vec<(usize, usize)> = Vec::new();
                 for &err_idx in err_map.keys() {
@@ -2470,14 +2470,14 @@ On success: clean summary. On failure: extracted error diagnostics with function
                     windows.push((w_start, w_end));
                 }
 
-                // Signature up to `{` line (also check for errors on signature lines)
+                //  Signature up to `{` line (also check for errors on signature lines)
                 for i in fn_start..=body_start.min(fn_end.saturating_sub(1)) {
                     out.push(lines[i].clone());
                     if let Some(msgs) = err_map.get(&i) {
                         let indent = lines[i].len() - lines[i].trim_start().len();
                         for msg in msgs {
                             out.push(format!(
-                                "{}// ^^^ {}",
+                                "{}//  ^^^ {}",
                                 " ".repeat(indent),
                                 msg
                             ));
@@ -2497,7 +2497,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
                             let indent = lines[i].len() - lines[i].trim_start().len();
                             for msg in msgs {
                                 out.push(format!(
-                                    "{}// ^^^ {}",
+                                    "{}//  ^^^ {}",
                                     " ".repeat(indent),
                                     msg
                                 ));
@@ -2519,7 +2519,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
             results.push(out.join("\n"));
         }
 
-        // Append orphan diagnostics (not associated with any function)
+        //  Append orphan diagnostics (not associated with any function)
         results.extend(orphan_rendered);
         results
     }
@@ -2659,8 +2659,8 @@ PYEOF
             Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
         };
 
-        // If --verify-module was used, always do a full crate profile after.
-        // This avoids false positive/negative detection issues.
+        //  If --verify-module was used, always do a full crate profile after.
+        //  This avoids false positive/negative detection issues.
         if !module_flag.is_empty() {
             let retry_preamble = build_profile_preamble(
                 &default_verus_root,
@@ -2681,7 +2681,7 @@ PYEOF
                     stdout
                 ))]));
             }
-            // Fallback output also empty - show stderr
+            //  Fallback output also empty - show stderr
             let lines: Vec<&str> = stderr.lines().collect();
             let start = lines.len().saturating_sub(50);
             let tail = lines[start..].join("\n");
@@ -2694,7 +2694,7 @@ PYEOF
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if stdout.trim().is_empty() {
-            // Python or cargo failed — show stderr
+            //  Python or cargo failed — show stderr
             let lines: Vec<&str> = stderr.lines().collect();
             let start = lines.len().saturating_sub(50);
             let tail = lines[start..].join("\n");
@@ -2750,7 +2750,7 @@ PYEOF
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        // Parse JSON diagnostics for errors
+        //  Parse JSON diagnostics for errors
         let diagnostics = Self::parse_json_diagnostics(&stdout, true);
         if !diagnostics.is_empty() {
             let annotated = self.annotate_diagnostics(&diagnostics, &params.crate_name);
@@ -2760,7 +2760,7 @@ PYEOF
             ))]));
         }
 
-        // Check for non-JSON build errors in stderr
+        //  Check for non-JSON build errors in stderr
         let has_error = stderr.contains("error[E") || stderr.contains("could not compile");
         if has_error {
             let lines: Vec<&str> = stderr.lines().collect();
@@ -2821,8 +2821,8 @@ PYEOF
         };
         let combined = String::from_utf8_lossy(&output.stdout);
 
-        // Since run uses 2>&1, all output is in stdout.
-        // Check for build errors first.
+        //  Since run uses 2>&1, all output is in stdout.
+        //  Check for build errors first.
         let has_build_error = combined.contains("error[E") || combined.contains("could not compile");
         if has_build_error {
             let lines: Vec<&str> = combined.lines().collect();
@@ -2833,7 +2833,7 @@ PYEOF
             ))]));
         }
 
-        // Return the program output
+        //  Return the program output
         if combined.trim().is_empty() {
             Ok(CallToolResult::success(vec![Content::text(format!(
                 "{}: ran successfully (no output)", params.crate_name
@@ -2873,11 +2873,11 @@ PYEOF
         ))]))
     }
 
-    // -----------------------------------------------------------------------
-    // Code editing tools (standalone mode only)
-    // -----------------------------------------------------------------------
+    //  -----------------------------------------------------------------------
+    //  Code editing tools (standalone mode only)
+    //  -----------------------------------------------------------------------
 
-    /// Gate: require standalone mode for code editing tools.
+    ///  Gate: require standalone mode for code editing tools.
     fn require_standalone(&self) -> Option<String> {
         if !crate::STANDALONE.load(std::sync::atomic::Ordering::Relaxed) {
             Some("Code editing tools are only available in standalone mode.".into())
@@ -2886,7 +2886,7 @@ PYEOF
         }
     }
 
-    /// Gate: block individual search tools in standalone mode (use unified `find` instead).
+    ///  Gate: block individual search tools in standalone mode (use unified `find` instead).
     fn require_not_standalone(&self) -> Option<String> {
         if crate::STANDALONE.load(std::sync::atomic::Ordering::Relaxed) {
             Some("In standalone mode, use the unified `find` tool instead.".into())
@@ -2895,7 +2895,7 @@ PYEOF
         }
     }
 
-    /// Compare use statements before/after a mutation and report only changes.
+    ///  Compare use statements before/after a mutation and report only changes.
     fn uses_diff(before: &str, after: &str) -> String {
         let extract = |src: &str| -> std::collections::BTreeSet<String> {
             editor::list_uses(src)
@@ -3127,9 +3127,9 @@ Filters (work with most scopes): kind, crate_name, module, limit, offset.")]
                             let lines: Vec<&str> = contents.lines().collect();
                             let start = e.line.saturating_sub(1);
                             let end = e.end_line.min(lines.len());
-                            sections.push(format!("// {}:{}-{}\n{}", e.file_path, e.line, e.end_line, lines[start..end].join("\n")));
+                            sections.push(format!("//  {}:{}-{}\n{}", e.file_path, e.line, e.end_line, lines[start..end].join("\n")));
                         }
-                        Err(err) => sections.push(format!("// {}:{}-{} (could not read: {})", e.file_path, e.line, e.end_line, err)),
+                        Err(err) => sections.push(format!("//  {}:{}-{} (could not read: {})", e.file_path, e.line, e.end_line, err)),
                     }
                 }
                 ok(sections.join("\n---\n"))
@@ -3167,7 +3167,7 @@ Filters (work with most scopes): kind, crate_name, module, limit, offset.")]
                 other
             )),
             None => {
-                // Default: batch lookup, exact lookup, or name search
+                //  Default: batch lookup, exact lookup, or name search
                 if let Some(names) = params.names {
                     if names.is_empty() { return ok("No names provided".into()); }
                     if names.len() > 10 { return ok("Max 10 names per call".into()); }
@@ -3187,7 +3187,7 @@ Filters (work with most scopes): kind, crate_name, module, limit, offset.")]
                     }
                     ok(sections.join("\n---\n"))
                 } else if let Some(name) = params.name {
-                    // Exact lookup
+                    //  Exact lookup
                     let fn_results = idx.lookup(&name);
                     if !fn_results.is_empty() {
                         return ok(fn_results.iter().map(|e| e.format_full()).collect::<Vec<_>>().join("\n"));
@@ -3200,7 +3200,7 @@ Filters (work with most scopes): kind, crate_name, module, limit, offset.")]
                     msg.push_str(&format_did_you_mean(&idx, &name));
                     ok(msg)
                 } else if let Some(query) = params.query {
-                    // Name substring search
+                    //  Name substring search
                     let det_limit = if params.details {
                         params.limit.map(|l| l.min(MAX_RESULTS)).unwrap_or(DEFAULT_RESULTS.min(10))
                     } else {
@@ -3291,7 +3291,7 @@ Note: There is no way to retrieve an entire file's source at once. To view a com
             let source = std::fs::read_to_string(&path)
                 .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", path, e), None))?;
 
-            // Mod statements as tree entries (not captured by parse_file)
+            //  Mod statements as tree entries (not captured by parse_file)
             let mods: Vec<String> = source
                 .lines()
                 .filter(|l| {
@@ -3306,13 +3306,13 @@ Note: There is no way to retrieve an entire file's source at once. To view a com
                 Err(_) => String::new(),
             };
 
-            // Insert mod entries after use statements but before other items
+            //  Insert mod entries after use statements but before other items
             if !mods.is_empty() {
                 let mod_block = mods.join("\n");
                 if result.is_empty() {
                     result = mod_block;
                 } else {
-                    // Find the last "- use" line to insert mods after
+                    //  Find the last "- use" line to insert mods after
                     let lines: Vec<&str> = result.lines().collect();
                     let last_use_idx = lines.iter().rposition(|l| l.starts_with("- use "));
                     if let Some(idx) = last_use_idx {
@@ -3320,7 +3320,7 @@ Note: There is no way to retrieve an entire file's source at once. To view a com
                         let after: Vec<&str> = lines[idx + 1..].to_vec();
                         result = format!("{}\n{}\n{}", before.join("\n"), mod_block, after.join("\n"));
                     } else {
-                        // No use statements, prepend mods
+                        //  No use statements, prepend mods
                         result = format!("{}\n{}", mod_block, result);
                     }
                 }
@@ -3352,7 +3352,7 @@ Reports import changes (added/removed use statements) after mutation.")]
         }
 
         if let Some(ref use_path_raw) = params.use_path {
-            // --- Add use statement ---
+            //  --- Add use statement ---
             let mut use_path = use_path_raw.clone();
             if !use_path.contains("::") {
                 self.wait_ready().await;
@@ -3410,7 +3410,7 @@ Reports import changes (added/removed use statements) after mutation.")]
                 Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {}", e))])),
             }
         } else if let Some(ref mod_name) = params.mod_name {
-            // --- Add pub mod statement ---
+            //  --- Add pub mod statement ---
             let source = std::fs::read_to_string(&params.file)
                 .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
             let mod_line = format!("pub mod {};", mod_name);
@@ -3423,7 +3423,7 @@ Reports import changes (added/removed use statements) after mutation.")]
                     mod_name
                 ))]));
             }
-            // Find insertion point: after last mod decl, else after last use, else at top
+            //  Find insertion point: after last mod decl, else after last use, else at top
             let mut insert_pos = 0usize;
             let mut pos = 0usize;
             for line in source.split('\n') {
@@ -3455,7 +3455,7 @@ Reports import changes (added/removed use statements) after mutation.")]
                 mod_line
             ))]))
         } else {
-            // --- Add function ---
+            //  --- Add function ---
             let fn_source = match assemble_fn(&params.spec) {
                 Ok(s) => s,
                 Err(e) => {
@@ -3468,14 +3468,14 @@ Reports import changes (added/removed use statements) after mutation.")]
             let source = std::fs::read_to_string(&params.file)
                 .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
 
-            // Extract function name to check for existing
+            //  Extract function name to check for existing
             let fn_name: Option<String> = params.spec.name.clone().or_else(|| {
                 editor::parse_file(&fn_source).ok().and_then(|items| {
                     items.functions.first().map(|f| f.qualified_name.clone())
                 })
             });
 
-            // If function already exists, replace it (replace_fn uses find_fn, so only matches functions)
+            //  If function already exists, replace it (replace_fn uses find_fn, so only matches functions)
             if let Some(ref name) = fn_name {
                 if let Ok(new_source) = editor::replace_fn(&source, name, &fn_source) {
                     std::fs::write(&params.file, &new_source)
@@ -3583,7 +3583,7 @@ Exactly one of name, use_path, or mod_name is required. Reports import changes a
                 mod_name
             ))]))
         } else {
-            // Check if the model likely intended to pass name but sent null
+            //  Check if the model likely intended to pass name but sent null
             Ok(CallToolResult::success(vec![Content::text(
                 "Error: `name`, `use_path`, or `mod_name` is required but all were null/empty. \
                  Pass a non-null value — e.g. name=\"my_function\" to remove a function."
@@ -3613,7 +3613,7 @@ Use this for surgical edits — changing a requires clause, fixing a body statem
         let source = std::fs::read_to_string(&params.file)
             .map_err(|e| McpError::internal_error(format!("Failed to read {}: {}", params.file, e), None))?;
 
-        // Check if old_string is a use statement edit
+        //  Check if old_string is a use statement edit
         let old_trimmed = params.old_string.trim();
         let is_use_edit = old_trimmed.starts_with("use ") || old_trimmed.starts_with("pub use ");
 
@@ -3641,12 +3641,12 @@ Use this for surgical edits — changing a requires clause, fixing a body statem
             let name: String = match params.name {
                 Some(ref n) if !n.is_empty() => n.clone(),
                 _ => {
-                    // Auto-detect: find which function contains old_string
+                    //  Auto-detect: find which function contains old_string
                     match editor::find_containing_fn(&source, &params.old_string) {
                         Ok(matches) if matches.len() == 1 => matches[0].clone(),
                         Ok(matches) if matches.is_empty() => {
-                            // No function contains old_string — try file-level edit
-                            // (handles multi-function edits and ellipsis patterns)
+                            //  No function contains old_string — try file-level edit
+                            //  (handles multi-function edits and ellipsis patterns)
                             match editor::edit_file(&source, &params.old_string, &params.new_string) {
                                 Ok(new_source) => {
                                     std::fs::write(&params.file, &new_source)
@@ -3683,11 +3683,11 @@ Use this for surgical edits — changing a requires clause, fixing a body statem
                     std::fs::write(&params.file, &new_source)
                         .map_err(|e| McpError::internal_error(format!("Failed to write {}: {}", params.file, e), None))?;
                     let diff = Self::uses_diff(&source, &new_source);
-                    // Extract edited function source + start line for UI context
+                    //  Extract edited function source + start line for UI context
                     let fn_context = editor::read_fn(&new_source, name)
                         .ok()
                         .and_then(|fn_src| {
-                            // Find the start line (1-indexed)
+                            //  Find the start line (1-indexed)
                             let byte_offset = new_source.find(fn_src.lines().next().unwrap_or(""))?;
                             let start_line = new_source[..byte_offset].matches('\n').count() + 1;
                             Some(format!("\n@@fn_start={}\n{}\n@@fn_end", start_line, fn_src))
@@ -3704,10 +3704,10 @@ Use this for surgical edits — changing a requires clause, fixing a body statem
     }
 }
 
-/// Tools only available in standalone mode.
+///  Tools only available in standalone mode.
 const STANDALONE_ONLY: &[&str] = &["find", "read", "add", "remove", "edit"];
 
-/// Tools hidden in standalone mode (replaced by unified tools above).
+///  Tools hidden in standalone mode (replaced by unified tools above).
 const HIDDEN_IN_STANDALONE: &[&str] = &[
     "search",
     "search_ensures",

@@ -60,7 +60,7 @@ pub struct FnEntry {
 }
 
 impl FnEntry {
-    /// Format as a compact signature string for search results.
+    ///  Format as a compact signature string for search results.
     pub fn format_signature(&self) -> String {
         let vis = self.visibility.as_str();
         let open = if self.is_open { "open " } else { "" };
@@ -88,16 +88,16 @@ impl FnEntry {
             .unwrap_or(&self.file_path)
     }
 
-    /// One-line compact format for search result lists.
-    /// `[kind] name  (filename:line)`
+    ///  One-line compact format for search result lists.
+    ///  `[kind] name  (filename:line)`
     pub fn format_compact(&self) -> String {
         format!("[{}] {}  ({}:{})", self.kind, self.name, self.filename(), self.line)
     }
 
-    /// Compact format with a matching clause snippet (for ensures/requires search).
-    /// If total clause text is ≤300 chars, shows all clauses for full context.
-    /// Otherwise centers a 120-char window around the match in the matching clause.
-    /// `matcher` returns the byte offset of the match start within a string, or None.
+    ///  Compact format with a matching clause snippet (for ensures/requires search).
+    ///  If total clause text is ≤300 chars, shows all clauses for full context.
+    ///  Otherwise centers a 120-char window around the match in the matching clause.
+    ///  `matcher` returns the byte offset of the match start within a string, or None.
     pub fn format_clause_match(
         &self,
         clauses: &[String],
@@ -107,14 +107,14 @@ impl FnEntry {
         let total_len: usize = trimmed.iter().map(|c| c.len()).sum();
 
         let snippet = if total_len <= 300 {
-            // Show all clauses for full context
+            //  Show all clauses for full context
             trimmed
                 .iter()
                 .map(|c| format!("    {}", c))
                 .collect::<Vec<_>>()
                 .join("\n")
         } else {
-            // Fall back to centered snippet of matching clause
+            //  Fall back to centered snippet of matching clause
             let s = clauses
                 .iter()
                 .find(|c| matcher(c).is_some())
@@ -128,14 +128,14 @@ impl FnEntry {
         )
     }
 
-    /// Compact format with a matching body snippet.
-    /// `matcher` returns the byte offset of the match start within a string, or None.
+    ///  Compact format with a matching body snippet.
+    ///  `matcher` returns the byte offset of the match start within a string, or None.
     pub fn format_body_match(&self, matcher: &dyn Fn(&str) -> Option<usize>) -> String {
         let snippet = self
             .body
             .as_ref()
             .and_then(|b| {
-                // Find the line containing the match and show it
+                //  Find the line containing the match and show it
                 let pos = matcher(b)?;
                 let line_start = b[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let line_end = b[pos..].find('\n').map(|i| pos + i).unwrap_or(b.len());
@@ -149,7 +149,7 @@ impl FnEntry {
         )
     }
 
-    /// Extract a centered 120-char window around the match position in `text`.
+    ///  Extract a centered 120-char window around the match position in `text`.
     fn snippet_around(text: &str, matcher: &dyn Fn(&str) -> Option<usize>) -> String {
         if text.len() <= 120 {
             return text.to_string();
@@ -171,7 +171,7 @@ impl FnEntry {
         format!("{}{}{}", prefix, &text[start..end], suffix)
     }
 
-    /// Full display with module, file, requires, ensures.
+    ///  Full display with module, file, requires, ensures.
     pub fn format_full(&self) -> String {
         let vis = self.visibility.as_str();
         let open = if self.is_open { "open " } else { "" };
@@ -221,7 +221,7 @@ impl FnEntry {
     }
 }
 
-// --- Type entries (structs, enums, type aliases) ---
+//  --- Type entries (structs, enums, type aliases) ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemKind {
@@ -252,9 +252,9 @@ pub struct TypeEntry {
     pub item_kind: ItemKind,
     pub visibility: Visibility,
     pub type_params: Option<String>,
-    /// Field declarations (struct) or variant names (enum).
+    ///  Field declarations (struct) or variant names (enum).
     pub fields: Vec<String>,
-    /// The aliased type (for type aliases only).
+    ///  The aliased type (for type aliases only).
     pub aliased_type: Option<String>,
     pub crate_name: String,
     pub module_path: String,
@@ -272,7 +272,7 @@ impl TypeEntry {
             .unwrap_or(&self.file_path)
     }
 
-    /// One-line compact format: `[struct] Vec2<T: Ring>  (vec2.rs:5)`
+    ///  One-line compact format: `[struct] Vec2<T: Ring>  (vec2.rs:5)`
     pub fn format_compact(&self) -> String {
         let tparams = self.type_params.as_deref().unwrap_or("");
         format!(
@@ -285,7 +285,7 @@ impl TypeEntry {
         )
     }
 
-    /// Full display with module, fields/variants.
+    ///  Full display with module, fields/variants.
     pub fn format_full(&self) -> String {
         let vis = self.visibility.as_str();
         let tparams = self.type_params.as_deref().unwrap_or("");
@@ -325,7 +325,7 @@ impl TypeEntry {
     }
 }
 
-// --- Trait and impl entries ---
+//  --- Trait and impl entries ---
 
 #[derive(Debug, Clone)]
 pub struct TraitEntry {
@@ -402,7 +402,7 @@ impl TraitEntry {
 
 #[derive(Debug, Clone)]
 pub struct ImplEntry {
-    /// None for inherent impls.
+    ///  None for inherent impls.
     pub trait_name: Option<String>,
     pub type_name: String,
     pub type_params: Option<String>,

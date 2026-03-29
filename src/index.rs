@@ -6,19 +6,19 @@ use std::collections::{HashMap, HashSet};
 pub const MAX_RESULTS: usize = 50;
 pub const DEFAULT_RESULTS: usize = 4;
 
-/// Parse a potentially qualified name like `crate::vec2::ops::foo` into (module_prefix, name).
-/// Returns `None` for the module prefix when the name is unqualified.
-/// Strips leading `crate::` or `crate_name::` prefixes.
+///  Parse a potentially qualified name like `crate::vec2::ops::foo` into (module_prefix, name).
+///  Returns `None` for the module prefix when the name is unqualified.
+///  Strips leading `crate::` or `crate_name::` prefixes.
 fn parse_qualified_name(input: &str) -> (Option<&str>, &str) {
     if let Some(pos) = input.rfind("::") {
         let module_part = &input[..pos];
         let name_part = &input[pos + 2..];
-        // Strip leading "crate::" or bare "crate" (crate root)
+        //  Strip leading "crate::" or bare "crate" (crate root)
         let module_part = module_part
             .strip_prefix("crate::")
             .unwrap_or(module_part);
         if module_part == "crate" {
-            // crate::foo → crate-root item, match by name only against empty module_path
+            //  crate::foo → crate-root item, match by name only against empty module_path
             (Some(""), name_part)
         } else {
             (Some(module_part), name_part)
@@ -28,8 +28,8 @@ fn parse_qualified_name(input: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// Strip generic parameters from a module path.
-/// e.g., "limits::Limits<T>" → "limits::Limits"
+///  Strip generic parameters from a module path.
+///  e.g., "limits::Limits<T>" → "limits::Limits"
 fn strip_generics(path: &str) -> &str {
     match path.find('<') {
         Some(pos) => &path[..pos],
@@ -37,23 +37,23 @@ fn strip_generics(path: &str) -> &str {
     }
 }
 
-/// Check if a module_path matches the given qualifier.
-/// The qualifier might be a suffix of the full module path (e.g., "vec2::ops" matches "vec2::ops")
-/// or it might include a crate name prefix that we should match against crate_name::module_path.
-/// Generic parameters are stripped before matching (e.g., qualifier "Limits" matches "limits::Limits<T>").
+///  Check if a module_path matches the given qualifier.
+///  The qualifier might be a suffix of the full module path (e.g., "vec2::ops" matches "vec2::ops")
+///  or it might include a crate name prefix that we should match against crate_name::module_path.
+///  Generic parameters are stripped before matching (e.g., qualifier "Limits" matches "limits::Limits<T>").
 fn module_matches(module_path: &str, crate_name: &str, qualifier: &str) -> bool {
     let module_path_clean = strip_generics(module_path);
     let qualifier_clean = strip_generics(qualifier);
-    // Direct match
+    //  Direct match
     if module_path_clean.eq_ignore_ascii_case(qualifier_clean) {
         return true;
     }
-    // Qualifier might be crate_name::module_path
+    //  Qualifier might be crate_name::module_path
     let full_path = format!("{}::{}", crate_name, module_path_clean);
     if full_path.eq_ignore_ascii_case(qualifier_clean) {
         return true;
     }
-    // Qualifier might be a suffix (e.g., "ops" matching "vec2::ops", or "Limits" matching "limits::Limits")
+    //  Qualifier might be a suffix (e.g., "ops" matching "vec2::ops", or "Limits" matching "limits::Limits")
     if module_path_clean.ends_with(qualifier_clean)
         && (module_path_clean.len() == qualifier_clean.len()
             || module_path_clean.as_bytes()[module_path_clean.len() - qualifier_clean.len() - 1] == b':')
@@ -75,14 +75,14 @@ pub struct Suggestion {
     pub score: f64,
 }
 
-/// A compiled matcher: regex if the query parses as one, otherwise plain substring.
+///  A compiled matcher: regex if the query parses as one, otherwise plain substring.
 pub enum Matcher {
     Regex(regex::Regex),
     Substring(String),
 }
 
 impl Matcher {
-    /// Try to compile as case-insensitive regex; fall back to lowercase substring.
+    ///  Try to compile as case-insensitive regex; fall back to lowercase substring.
     pub fn new(query: &str) -> Self {
         match RegexBuilder::new(query).case_insensitive(true).build() {
             Ok(re) => Matcher::Regex(re),
@@ -97,7 +97,7 @@ impl Matcher {
         }
     }
 
-    /// Return the byte offset of the first match, or None.
+    ///  Return the byte offset of the first match, or None.
     pub fn find_pos(&self, text: &str) -> Option<usize> {
         match self {
             Matcher::Regex(re) => re.find(text).map(|m| m.start()),
@@ -125,12 +125,12 @@ pub struct IndexStats {
     pub by_crate: std::collections::BTreeMap<String, CrateStats>,
 }
 
-/// Normalize crate name: replace hyphens with underscores and lowercase.
+///  Normalize crate name: replace hyphens with underscores and lowercase.
 fn normalize_crate(name: &str) -> String {
     name.to_lowercase().replace('-', "_")
 }
 
-/// Compare two crate names, treating hyphens and underscores as equivalent.
+///  Compare two crate names, treating hyphens and underscores as equivalent.
 fn crate_name_matches(entry_crate: &str, filter_crate: &str) -> bool {
     normalize_crate(entry_crate) == normalize_crate(filter_crate)
 }
@@ -150,21 +150,21 @@ pub struct Index {
     type_entries: Vec<TypeEntry>,
     trait_entries: Vec<TraitEntry>,
     impl_entries: Vec<ImplEntry>,
-    /// For each function name, indices of entries that call it.
+    ///  For each function name, indices of entries that call it.
     callers: HashMap<String, Vec<usize>>,
-    /// For each entry index, set of function names it calls.
+    ///  For each entry index, set of function names it calls.
     callees: Vec<HashSet<String>>,
     file_cache: FileCache,
 }
 
-/// Tokenize body text into identifier-like tokens.
+///  Tokenize body text into identifier-like tokens.
 fn tokenize_body(body: &str) -> HashSet<&str> {
     body.split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|s| !s.is_empty())
         .collect()
 }
 
-/// Apply offset + limit pagination to a collected Vec.
+///  Apply offset + limit pagination to a collected Vec.
 fn paginate<T>(items: Vec<T>, offset: usize, limit: usize) -> Vec<T> {
     items.into_iter().skip(offset).take(limit).collect()
 }
@@ -189,10 +189,10 @@ impl Index {
         impl_entries: Vec<ImplEntry>,
         file_cache: FileCache,
     ) -> Self {
-        // Build known function name set
+        //  Build known function name set
         let known_names: HashSet<String> = entries.iter().map(|e| e.name.clone()).collect();
 
-        // Build call graph
+        //  Build call graph
         let mut callers: HashMap<String, Vec<usize>> = HashMap::new();
         let mut callees: Vec<HashSet<String>> = Vec::with_capacity(entries.len());
 
@@ -241,8 +241,8 @@ impl Index {
         self.impl_entries.len()
     }
 
-    /// Search by name substring, with optional filters.
-    /// Results ranked: exact match > prefix > substring, then by name length ascending.
+    ///  Search by name substring, with optional filters.
+    ///  Results ranked: exact match > prefix > substring, then by name length ascending.
     pub fn search(
         &self,
         query: &str,
@@ -270,7 +270,7 @@ impl Index {
 
         let total_count = matches.len();
 
-        // Rank: exact (0) > prefix (1) > substring (2), then by name length
+        //  Rank: exact (0) > prefix (1) > substring (2), then by name length
         matches.sort_by(|a, b| {
             let a_lower = a.name.to_lowercase();
             let b_lower = b.name.to_lowercase();
@@ -299,7 +299,7 @@ impl Index {
         }
     }
 
-    /// Exact name match for functions.
+    ///  Exact name match for functions.
     pub fn lookup(&self, name: &str) -> Vec<&FnEntry> {
         let (qualifier, bare_name) = parse_qualified_name(name);
         self.entries
@@ -314,7 +314,7 @@ impl Index {
             .collect()
     }
 
-    /// Exact name match for types (fallback when fn lookup finds nothing).
+    ///  Exact name match for types (fallback when fn lookup finds nothing).
     pub fn lookup_type(&self, name: &str) -> Vec<&TypeEntry> {
         let (qualifier, bare_name) = parse_qualified_name(name);
         self.type_entries
@@ -329,7 +329,7 @@ impl Index {
             .collect()
     }
 
-    /// Exact name match for traits.
+    ///  Exact name match for traits.
     pub fn lookup_trait(&self, name: &str) -> Vec<&TraitEntry> {
         let (qualifier, bare_name) = parse_qualified_name(name);
         self.trait_entries
@@ -344,7 +344,7 @@ impl Index {
             .collect()
     }
 
-    /// Filter helper for optional crate_name, module, name, and kind filters on FnEntry.
+    ///  Filter helper for optional crate_name, module, name, and kind filters on FnEntry.
     fn matches_fn_filters(
         e: &FnEntry,
         crate_name: Option<&str>,
@@ -375,7 +375,7 @@ impl Index {
         true
     }
 
-    /// Search within ensures clauses. Query supports regex (falls back to substring).
+    ///  Search within ensures clauses. Query supports regex (falls back to substring).
     pub fn search_ensures(
         &self,
         query: &str,
@@ -404,7 +404,7 @@ impl Index {
         SearchResult { items, total_count }
     }
 
-    /// Search within requires clauses. Query supports regex (falls back to substring).
+    ///  Search within requires clauses. Query supports regex (falls back to substring).
     pub fn search_requires(
         &self,
         query: &str,
@@ -433,7 +433,7 @@ impl Index {
         SearchResult { items, total_count }
     }
 
-    /// Search within function bodies for usage of a lemma or pattern. Query supports regex (falls back to substring).
+    ///  Search within function bodies for usage of a lemma or pattern. Query supports regex (falls back to substring).
     pub fn search_body(
         &self,
         query: &str,
@@ -462,7 +462,7 @@ impl Index {
         SearchResult { items, total_count }
     }
 
-    /// Search within doc comments of functions. Query supports regex (falls back to substring).
+    ///  Search within doc comments of functions. Query supports regex (falls back to substring).
     pub fn search_doc(
         &self,
         query: &str,
@@ -491,7 +491,7 @@ impl Index {
         SearchResult { items, total_count }
     }
 
-    /// Search within doc comments of types. Query supports regex (falls back to substring).
+    ///  Search within doc comments of types. Query supports regex (falls back to substring).
     pub fn search_type_doc(
         &self,
         query: &str,
@@ -530,8 +530,8 @@ impl Index {
         TypeSearchResult { items, total_count }
     }
 
-    /// Search by signature types and trait bounds.
-    /// At least one of param_type, return_type, or type_bound must be provided.
+    ///  Search by signature types and trait bounds.
+    ///  At least one of param_type, return_type, or type_bound must be provided.
     pub fn search_signature(
         &self,
         param_type: Option<&str>,
@@ -582,7 +582,7 @@ impl Index {
 
         let total_count = matches.len();
 
-        // Rank by name when name filter is provided
+        //  Rank by name when name filter is provided
         if let Some(n) = name {
             let n_lower = n.to_lowercase();
             matches.sort_by(|a, b| {
@@ -614,7 +614,7 @@ impl Index {
         }
     }
 
-    /// Search types (structs, enums, type aliases) by name substring.
+    ///  Search types (structs, enums, type aliases) by name substring.
     pub fn search_types(
         &self,
         query: &str,
@@ -645,7 +645,7 @@ impl Index {
 
         let total_count = matches.len();
 
-        // Rank: exact > prefix > substring, then by name length
+        //  Rank: exact > prefix > substring, then by name length
         matches.sort_by(|a, b| {
             let a_lower = a.name.to_lowercase();
             let b_lower = b.name.to_lowercase();
@@ -674,7 +674,7 @@ impl Index {
         }
     }
 
-    /// Search trait impls by trait name substring.
+    ///  Search trait impls by trait name substring.
     pub fn search_trait_impls(&self, trait_name: &str) -> Vec<&ImplEntry> {
         let q = trait_name.to_lowercase();
         self.impl_entries
@@ -687,7 +687,7 @@ impl Index {
             .collect()
     }
 
-    /// Fuzzy search by name using Jaro-Winkler similarity with 0.75 threshold.
+    ///  Fuzzy search by name using Jaro-Winkler similarity with 0.75 threshold.
     pub fn search_fuzzy(&self, query: &str, limit: usize) -> SearchResult<'_> {
         let q = query.to_lowercase();
         let threshold = 0.75;
@@ -713,8 +713,8 @@ impl Index {
         }
     }
 
-    /// Compute similarity between a name and query (both already lowercased).
-    /// Substring containment scores 0.9, otherwise Jaro-Winkler.
+    ///  Compute similarity between a name and query (both already lowercased).
+    ///  Substring containment scores 0.9, otherwise Jaro-Winkler.
     fn similarity_score(name: &str, query: &str) -> f64 {
         if name == query {
             1.0
@@ -725,8 +725,8 @@ impl Index {
         }
     }
 
-    /// Suggest similar names across all indexed items (functions, types, traits).
-    /// Used for "Did you mean?" when a search returns no results.
+    ///  Suggest similar names across all indexed items (functions, types, traits).
+    ///  Used for "Did you mean?" when a search returns no results.
     pub fn suggest(&self, query: &str, limit: usize) -> Vec<Suggestion> {
         let q = query.to_lowercase();
         let threshold = 0.7;
@@ -783,13 +783,13 @@ impl Index {
         suggestions
     }
 
-    /// Browse a module: returns all functions and types whose module_path matches
-    /// (exact or prefix match). Also supports crate-qualified paths like
-    /// "verus_topology" or "verus_topology::mesh".
+    ///  Browse a module: returns all functions and types whose module_path matches
+    ///  (exact or prefix match). Also supports crate-qualified paths like
+    ///  "verus_topology" or "verus_topology::mesh".
     pub fn browse_module(&self, path: &str) -> (Vec<&FnEntry>, Vec<&TypeEntry>) {
         let p = path.to_lowercase();
 
-        // Check if path starts with a crate name (possibly after stripping "crate::")
+        //  Check if path starts with a crate name (possibly after stripping "crate::")
         let stripped = p.strip_prefix("crate::").unwrap_or(&p);
         let (crate_filter, mod_filter) = self.parse_browse_path(stripped);
 
@@ -806,21 +806,21 @@ impl Index {
         (fns, types)
     }
 
-    /// Parse a browse path into (crate_filter, module_filter).
-    /// If the path matches a known crate name, split it; otherwise return (None, full_path).
+    ///  Parse a browse path into (crate_filter, module_filter).
+    ///  If the path matches a known crate name, split it; otherwise return (None, full_path).
     fn parse_browse_path(&self, path: &str) -> (Option<String>, Option<String>) {
-        // Collect known crate names
+        //  Collect known crate names
         let crate_names: HashSet<String> = self.entries.iter()
             .map(|e| normalize_crate(&e.crate_name))
             .chain(self.type_entries.iter().map(|e| normalize_crate(&e.crate_name)))
             .collect();
 
-        // Check if path is exactly a crate name
+        //  Check if path is exactly a crate name
         if crate_names.contains(&normalize_crate(path)) {
             return (Some(normalize_crate(path)), None);
         }
 
-        // Check if path starts with "crate_name::"
+        //  Check if path starts with "crate_name::"
         if let Some(pos) = path.find("::") {
             let prefix = &path[..pos];
             if crate_names.contains(&normalize_crate(prefix)) {
@@ -832,7 +832,7 @@ impl Index {
         (None, None)
     }
 
-    /// Check if an entry matches the browse query.
+    ///  Check if an entry matches the browse query.
     fn browse_matches(
         &self,
         entry_crate: &str,
@@ -841,13 +841,13 @@ impl Index {
         crate_filter: &Option<String>,
         mod_filter: &Option<String>,
     ) -> bool {
-        // If we identified a crate filter, use it
+        //  If we identified a crate filter, use it
         if let Some(ref cf) = crate_filter {
             if normalize_crate(entry_crate) != *cf {
                 return false;
             }
             return match mod_filter {
-                None => true, // browse entire crate
+                None => true, //  browse entire crate
                 Some(mf) => {
                     let mp = entry_module.to_lowercase();
                     mp == *mf || mp.starts_with(&format!("{}::", mf))
@@ -855,12 +855,12 @@ impl Index {
             };
         }
 
-        // Fallback: original module_path matching
+        //  Fallback: original module_path matching
         let mp = entry_module.to_lowercase();
         mp == *raw_path || mp.starts_with(&format!("{}::", raw_path))
     }
 
-    /// Find all functions that call a given function name.
+    ///  Find all functions that call a given function name.
     pub fn find_callers(&self, name: &str) -> Vec<&FnEntry> {
         self.callers
             .get(name)
@@ -873,9 +873,9 @@ impl Index {
             .unwrap_or_default()
     }
 
-    /// Find all function names called by a given function name.
+    ///  Find all function names called by a given function name.
     pub fn find_callees(&self, name: &str) -> Vec<&str> {
-        // Find the entry index for this name
+        //  Find the entry index for this name
         self.entries
             .iter()
             .enumerate()
@@ -885,7 +885,7 @@ impl Index {
             .unwrap_or_default()
     }
 
-    /// Compute stats: counts by kind, by crate, assume(false) count.
+    ///  Compute stats: counts by kind, by crate, assume(false) count.
     pub fn stats(&self) -> IndexStats {
         let mut spec = 0usize;
         let mut proof = 0usize;
@@ -931,7 +931,7 @@ impl Index {
         }
     }
 
-    /// List all unique modules with item counts (functions + types).
+    ///  List all unique modules with item counts (functions + types).
     pub fn list_modules(&self) -> Vec<(String, usize)> {
         let mut map = std::collections::BTreeMap::<String, usize>::new();
         for e in &self.entries {
@@ -943,8 +943,8 @@ impl Index {
         map.into_iter().collect()
     }
 
-    /// Resolve a short name (e.g., "Ring") to possible import paths.
-    /// Returns Vec<(crate_name, module_path, item_name, item_kind)>.
+    ///  Resolve a short name (e.g., "Ring") to possible import paths.
+    ///  Returns Vec<(crate_name, module_path, item_name, item_kind)>.
     pub fn resolve_import(&self, short_name: &str) -> Vec<(String, String, String, String)> {
         let mut results = Vec::new();
         let mut seen = HashSet::new();
@@ -994,18 +994,18 @@ impl Index {
         results
     }
 
-    /// Find the function containing a given file path and line number.
-    /// Returns (function_name, fn_start_line) if found.
+    ///  Find the function containing a given file path and line number.
+    ///  Returns (function_name, fn_start_line) if found.
     pub fn fn_at_line(&self, file_path: &str, line: usize) -> Option<&FnEntry> {
-        // Normalize: error paths are relative (src/ring.rs), index paths are absolute.
-        // Match by suffix.
+        //  Normalize: error paths are relative (src/ring.rs), index paths are absolute.
+        //  Match by suffix.
         let mut best: Option<(&FnEntry, usize)> = None;
         for e in &self.entries {
             if !e.file_path.ends_with(file_path) && !file_path.ends_with(&e.file_path) {
                 continue;
             }
             if line >= e.line && line <= e.end_line {
-                // Prefer tightest span (smallest range)
+                //  Prefer tightest span (smallest range)
                 let span = e.end_line - e.line;
                 if best.is_none() || span < best.unwrap().1 {
                     best = Some((e, span));

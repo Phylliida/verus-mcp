@@ -1,27 +1,27 @@
 use crate::types::FnKind;
 
-// ---------------------------------------------------------------------------
-// Located‐item structs — carry byte offsets for splicing
-// ---------------------------------------------------------------------------
+//  ---------------------------------------------------------------------------
+//  Located‐item structs — carry byte offsets for splicing
+//  ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct LocatedFn {
     pub name: String,
-    /// "Type::method" for impl methods
+    ///  "Type::method" for impl methods
     pub qualified_name: String,
     pub kind: Option<FnKind>,
-    /// Everything before the body `{`
+    ///  Everything before the body `{`
     pub signature: String,
     pub start_byte: usize,
     pub end_byte: usize,
-    /// For methods, the impl target type
+    ///  For methods, the impl target type
     pub impl_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct LocatedType {
     pub name: String,
-    /// "struct", "enum", or "type"
+    ///  "struct", "enum", or "type"
     pub kind: String,
     pub signature: String,
     pub start_byte: usize,
@@ -59,9 +59,9 @@ pub struct LocatedUse {
 pub struct LocatedVerusBlock {
     pub start_byte: usize,
     pub end_byte: usize,
-    /// Start of the inner body (after the opening `{` + whitespace)
+    ///  Start of the inner body (after the opening `{` + whitespace)
     pub body_start_byte: usize,
-    /// End of the inner body (before the closing `}`)
+    ///  End of the inner body (before the closing `}`)
     pub body_end_byte: usize,
 }
 
@@ -75,9 +75,9 @@ pub struct FileItems {
     pub verus_blocks: Vec<LocatedVerusBlock>,
 }
 
-// ---------------------------------------------------------------------------
-// Tree‑sitter helpers
-// ---------------------------------------------------------------------------
+//  ---------------------------------------------------------------------------
+//  Tree‑sitter helpers
+//  ---------------------------------------------------------------------------
 
 fn node_text<'a>(node: &tree_sitter::Node, source: &'a str) -> &'a str {
     node.utf8_text(source.as_bytes()).unwrap_or("")
@@ -101,9 +101,9 @@ fn extract_fn_kind(node: &tree_sitter::Node, source: &str) -> Option<FnKind> {
     None
 }
 
-/// Build signature text: everything from start of the node up to (but not
-/// including) the body block `{`. Falls back to full node text for
-/// signature-only items.
+///  Build signature text: everything from start of the node up to (but not
+///  including) the body block `{`. Falls back to full node text for
+///  signature-only items.
 fn extract_signature(node: &tree_sitter::Node, source: &str) -> String {
     if let Some(body) = node.child_by_field_name("body") {
         let sig_end = body.start_byte();
@@ -113,9 +113,9 @@ fn extract_signature(node: &tree_sitter::Node, source: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Core parsing
-// ---------------------------------------------------------------------------
+//  ---------------------------------------------------------------------------
+//  Core parsing
+//  ---------------------------------------------------------------------------
 
 pub fn parse_file(source: &str) -> Result<FileItems, String> {
     let mut parser = tree_sitter::Parser::new();
@@ -141,7 +141,7 @@ fn collect_items(
     impl_type: Option<&str>,
     items: &mut FileItems,
 ) {
-    // Handle ERROR nodes: try to extract orphaned functions
+    //  Handle ERROR nodes: try to extract orphaned functions
     if node.kind() == "ERROR" {
         extract_orphaned_functions(node, source, impl_type, items);
     }
@@ -151,7 +151,7 @@ fn collect_items(
         match child.kind() {
             "use_declaration" => {
                 let full_text = node_text(&child, source).to_string();
-                // Extract path: strip "use " prefix and trailing ";"
+                //  Extract path: strip "use " prefix and trailing ";"
                 let path = full_text
                     .strip_prefix("use ")
                     .unwrap_or(&full_text)
@@ -170,14 +170,14 @@ fn collect_items(
                 let vb_end = child.end_byte();
 
                 if let Some(body) = child.child_by_field_name("body") {
-                    // body is typically a declaration_list
+                    //  body is typically a declaration_list
                     let body_start = body.start_byte();
                     let body_end = body.end_byte();
 
-                    // The body_start_byte should be after the opening `{` of the
-                    // declaration_list. We use the first byte inside the list.
-                    // declaration_list looks like `{ ... }` so start_byte is `{`.
-                    // We want the byte right after `{`.
+                    //  The body_start_byte should be after the opening `{` of the
+                    //  declaration_list. We use the first byte inside the list.
+                    //  declaration_list looks like `{ ... }` so start_byte is `{`.
+                    //  We want the byte right after `{`.
                     let inner_start = if body_start < source.len()
                         && source.as_bytes()[body_start] == b'{'
                     {
@@ -200,10 +200,10 @@ fn collect_items(
                         body_end_byte: inner_end,
                     });
 
-                    // Recurse into the body
+                    //  Recurse into the body
                     collect_items(&body, source, impl_type, items);
                 } else {
-                    // verus block without body field — record block, recurse children
+                    //  verus block without body field — record block, recurse children
                     items.verus_blocks.push(LocatedVerusBlock {
                         start_byte: vb_start,
                         end_byte: vb_end,
@@ -361,7 +361,7 @@ fn collect_trait(
     });
 }
 
-/// Extract orphaned function signatures from ERROR nodes (same pattern as parser.rs).
+///  Extract orphaned function signatures from ERROR nodes (same pattern as parser.rs).
 fn extract_orphaned_functions(
     error_node: &tree_sitter::Node,
     source: &str,
@@ -387,7 +387,7 @@ fn extract_orphaned_functions(
         let mods_node = child;
         let mods_idx = i;
 
-        // Extract kind
+        //  Extract kind
         let mut kind = None;
         {
             let mut mc = mods_node.walk();
@@ -401,7 +401,7 @@ fn extract_orphaned_functions(
             }
         }
 
-        // Scan for identifier (name)
+        //  Scan for identifier (name)
         let mut j = mods_idx + 1;
         let mut name_text: Option<String> = None;
         while j < child_count {
@@ -434,7 +434,7 @@ fn extract_orphaned_functions(
             continue;
         }
 
-        // Determine start: include visibility_modifier if present
+        //  Determine start: include visibility_modifier if present
         let start_byte = if mods_idx > 0 {
             error_node.child(mods_idx - 1)
                 .filter(|n| n.kind() == "visibility_modifier")
@@ -446,7 +446,7 @@ fn extract_orphaned_functions(
 
         let mut end_byte = mods_node.end_byte();
 
-        // Collect end_byte by scanning forward
+        //  Collect end_byte by scanning forward
         while j < child_count {
             let n = match error_node.child(j) {
                 Some(n) => n,
@@ -461,7 +461,7 @@ fn extract_orphaned_functions(
             j += 1;
         }
 
-        // Build signature from source text up to the body block
+        //  Build signature from source text up to the body block
         let fn_text = &source[start_byte..end_byte];
         let sig = if let Some(brace_pos) = fn_text.find('{') {
             fn_text[..brace_pos].trim_end().to_string()
@@ -488,24 +488,24 @@ fn extract_orphaned_functions(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tool implementations
-// ---------------------------------------------------------------------------
+//  ---------------------------------------------------------------------------
+//  Tool implementations
+//  ---------------------------------------------------------------------------
 
-/// List all items in a file, optionally filtered by kind.
-/// Returns a formatted string with one signature per line.
+///  List all items in a file, optionally filtered by kind.
+///  Returns a formatted string with one signature per line.
 pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, String> {
     let items = parse_file(source)?;
 
-    // Helper: check if a byte offset falls inside any verus block
+    //  Helper: check if a byte offset falls inside any verus block
     let in_verus = |byte: usize| -> bool {
         items.verus_blocks.iter().any(|vb| byte >= vb.body_start_byte && byte < vb.body_end_byte)
     };
 
-    // Collect (start_byte, formatted, is_in_verus) entries
+    //  Collect (start_byte, formatted, is_in_verus) entries
     let mut entries: Vec<(usize, String, bool)> = Vec::new();
 
-    // Collect impl/trait method byte ranges to skip in top-level function list
+    //  Collect impl/trait method byte ranges to skip in top-level function list
     let nested_fn_bytes: std::collections::HashSet<usize> = items
         .impls
         .iter()
@@ -513,7 +513,7 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
         .chain(items.traits.iter().flat_map(|t| t.methods.iter().map(|m| m.start_byte)))
         .collect();
 
-    // Functions (optionally filtered), excluding impl/trait methods (shown under their block)
+    //  Functions (optionally filtered), excluding impl/trait methods (shown under their block)
     for f in &items.functions {
         if nested_fn_bytes.contains(&f.start_byte) {
             continue;
@@ -528,12 +528,12 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
             Some(_) => true,
         };
         if include {
-            // Show signature with body placeholder: `fn foo() { ... }`
+            //  Show signature with body placeholder: `fn foo() { ... }`
             let has_body = f.end_byte > f.start_byte
                 && source[f.start_byte..f.end_byte].trim_end().ends_with('}');
             let mut text = String::new();
             if has_doc_comment(source, f.start_byte) {
-                text.push_str("// ...\n");
+                text.push_str("//  ...\n");
             }
             if has_body {
                 text.push_str(&format!("{} {{ ... }}", f.signature));
@@ -544,7 +544,7 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
         }
     }
 
-    // Types
+    //  Types
     let show_types = match kind_filter {
         None => true,
         Some("struct") | Some("enum") | Some("type") => true,
@@ -557,10 +557,10 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
                 Some(k) => t.kind == k,
             };
             if include {
-                let has_body = t.kind != "type"; // type aliases have no body
+                let has_body = t.kind != "type"; //  type aliases have no body
                 let mut text = String::new();
                 if has_doc_comment(source, t.start_byte) {
-                    text.push_str("// ...\n");
+                    text.push_str("//  ...\n");
                 }
                 if has_body {
                     text.push_str(&format!("{} {{ ... }}", t.signature));
@@ -572,12 +572,12 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
         }
     }
 
-    // Traits — show header, then each method with signature on its own line
+    //  Traits — show header, then each method with signature on its own line
     if kind_filter.is_none() || kind_filter == Some("trait") {
         for t in &items.traits {
             let mut lines = Vec::new();
             if has_doc_comment(source, t.start_byte) {
-                lines.push("// ...".to_string());
+                lines.push("//  ...".to_string());
             }
             if t.methods.is_empty() {
                 lines.push(format!("{} {{ ... }}", t.signature));
@@ -585,7 +585,7 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
                 lines.push(format!("{} {{", t.signature));
                 for m in &t.methods {
                     if has_doc_comment(source, m.start_byte) {
-                        lines.push("    // ...".to_string());
+                        lines.push("    //  ...".to_string());
                     }
                     let has_body = source[m.start_byte..m.end_byte].trim_end().ends_with('}');
                     if has_body {
@@ -600,12 +600,12 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
         }
     }
 
-    // Impls — show header, then each method with signature on its own line
+    //  Impls — show header, then each method with signature on its own line
     if kind_filter.is_none() || kind_filter == Some("impl") {
         for im in &items.impls {
             let mut lines = Vec::new();
             if has_doc_comment(source, im.start_byte) {
-                lines.push("// ...".to_string());
+                lines.push("//  ...".to_string());
             }
             if im.methods.is_empty() {
                 lines.push(format!("{} {{ ... }}", im.signature));
@@ -613,7 +613,7 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
                 lines.push(format!("{} {{", im.signature));
                 for m in &im.methods {
                     if has_doc_comment(source, m.start_byte) {
-                        lines.push("    // ...".to_string());
+                        lines.push("    //  ...".to_string());
                     }
                     let has_body = source[m.start_byte..m.end_byte].trim_end().ends_with('}');
                     if has_body {
@@ -632,10 +632,10 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
         return Ok("No items found.".to_string());
     }
 
-    // Sort by source position
+    //  Sort by source position
     entries.sort_by_key(|(byte, _, _)| *byte);
 
-    // Group items: wrap consecutive verus items in verus! { ... }
+    //  Group items: wrap consecutive verus items in verus! { ... }
     let mut output = Vec::new();
     let mut in_verus_group = false;
 
@@ -650,7 +650,7 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
         }
 
         if in_verus_group {
-            // Indent every line of multi-line entries (e.g. impl blocks)
+            //  Indent every line of multi-line entries (e.g. impl blocks)
             for line in text.lines() {
                 output.push(format!("    {}", line));
             }
@@ -665,14 +665,14 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
 
     let result = output.join("\n");
     let has_body = result.contains("{ ... }");
-    let has_doc = result.contains("// ...");
+    let has_doc = result.contains("//  ...");
     if has_body || has_doc {
         let mut notes = Vec::new();
         if has_body {
-            notes.push("// { ... } = body hidden. Use `read` with `name` to view full source.");
+            notes.push("//  { ... } = body hidden. Use `read` with `name` to view full source.");
         }
         if has_doc {
-            notes.push("// // ... = doc comments hidden.");
+            notes.push("//  //  ... = doc comments hidden.");
         }
         Ok(format!("{}\n\n{}", result, notes.join("\n")))
     } else {
@@ -680,7 +680,7 @@ pub fn list_items(source: &str, kind_filter: Option<&str>) -> Result<String, Str
     }
 }
 
-/// Format a trait/impl block with method stubs (signatures + `...` for bodies).
+///  Format a trait/impl block with method stubs (signatures + `...` for bodies).
 fn format_block_summary(source: &str, signature: &str, methods: &[LocatedFn]) -> String {
     let mut lines = vec![format!("{} {{", signature)];
     for m in methods {
@@ -694,32 +694,32 @@ fn format_block_summary(source: &str, signature: &str, methods: &[LocatedFn]) ->
     lines.push("}".to_string());
     if methods.iter().any(|m| source[m.start_byte..m.end_byte].trim_end().ends_with('}')) {
         lines.push(String::new());
-        lines.push("// { ... } = body hidden. Use `read` with method name to view full source.".to_string());
+        lines.push("//  { ... } = body hidden. Use `read` with method name to view full source.".to_string());
     }
     lines.join("\n")
 }
 
-/// Return the source text of a named item (function, trait, impl, type).
-/// Searches functions first, then traits, impls, and types.
-/// Supports qualified names like "Type::method".
+///  Return the source text of a named item (function, trait, impl, type).
+///  Searches functions first, then traits, impls, and types.
+///  Supports qualified names like "Type::method".
 pub fn read_fn(source: &str, name: &str) -> Result<String, String> {
     let items = parse_file(source)?;
 
-    // Try functions first
+    //  Try functions first
     if let Ok(found) = find_fn(&items, name) {
         return Ok(source[found.start_byte..found.end_byte].to_string());
     }
 
     let name_stripped = strip_generics(name);
 
-    // Try traits — show signature + method stubs
+    //  Try traits — show signature + method stubs
     for t in &items.traits {
         if t.name == name || strip_generics(&t.name) == name_stripped {
             return Ok(format_block_summary(source, &t.signature, &t.methods));
         }
     }
 
-    // Try impls — show signature + method stubs
+    //  Try impls — show signature + method stubs
     for im in &items.impls {
         let label = if let Some(ref tr) = im.trait_name {
             format!("{} for {}", tr, im.type_name)
@@ -735,14 +735,14 @@ pub fn read_fn(source: &str, name: &str) -> Result<String, String> {
         }
     }
 
-    // Try types (struct, enum, type alias)
+    //  Try types (struct, enum, type alias)
     for ty in &items.types {
         if ty.name == name || strip_generics(&ty.name) == name_stripped {
             return Ok(source[ty.start_byte..ty.end_byte].to_string());
         }
     }
 
-    // Nothing found — build combined list
+    //  Nothing found — build combined list
     let mut available: Vec<&str> = items.functions.iter().map(|f| f.qualified_name.as_str()).collect();
     available.extend(items.traits.iter().map(|t| t.name.as_str()));
     available.extend(items.impls.iter().map(|im| im.type_name.as_str()));
@@ -754,7 +754,7 @@ pub fn read_fn(source: &str, name: &str) -> Result<String, String> {
     ))
 }
 
-/// Find which function(s) contain a given substring. Returns qualified names.
+///  Find which function(s) contain a given substring. Returns qualified names.
 pub fn find_containing_fn(source: &str, needle: &str) -> Result<Vec<String>, String> {
     let items = parse_file(source)?;
     let matches: Vec<String> = items
@@ -766,7 +766,7 @@ pub fn find_containing_fn(source: &str, needle: &str) -> Result<Vec<String>, Str
     Ok(matches)
 }
 
-/// Levenshtein edit distance between two strings.
+///  Levenshtein edit distance between two strings.
 fn edit_distance(a: &str, b: &str) -> usize {
     let a_bytes = a.as_bytes();
     let b_bytes = b.as_bytes();
@@ -785,11 +785,11 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[n]
 }
 
-/// Per-line edit distance: sum of edit distances between corresponding lines,
-/// plus a large penalty per added/removed line. Returns None if over max_total.
+///  Per-line edit distance: sum of edit distances between corresponding lines,
+///  plus a large penalty per added/removed line. Returns None if over max_total.
 fn line_level_distance(needle_lines: &[&str], candidate_lines: &[&str], max_total: usize) -> Option<usize> {
     if needle_lines.len() != candidate_lines.len() {
-        return None; // line count must match — we don't fuzzy across line boundaries
+        return None; //  line count must match — we don't fuzzy across line boundaries
     }
     let mut total = 0usize;
     let max_per_line = 10;
@@ -806,8 +806,8 @@ fn line_level_distance(needle_lines: &[&str], candidate_lines: &[&str], max_tota
     Some(total)
 }
 
-/// Try to fuzzy-match `needle` (multi-line) against sliding windows in `haystack`.
-/// Returns (byte_offset, matched_length, distance) of unique best match, or None.
+///  Try to fuzzy-match `needle` (multi-line) against sliding windows in `haystack`.
+///  Returns (byte_offset, matched_length, distance) of unique best match, or None.
 fn fuzzy_find(haystack: &str, needle: &str, max_total: usize) -> Option<(usize, usize, usize)> {
     let needle_lines: Vec<&str> = needle.lines().collect();
     let n_lines = needle_lines.len();
@@ -820,15 +820,15 @@ fn fuzzy_find(haystack: &str, needle: &str, max_total: usize) -> Option<(usize, 
         return None;
     }
 
-    // Precompute byte offset of each line in haystack
+    //  Precompute byte offset of each line in haystack
     let mut line_byte_offsets = Vec::with_capacity(hay_lines.len());
     let mut offset = 0usize;
     for line in &hay_lines {
         line_byte_offsets.push(offset);
-        offset += line.len() + 1; // +1 for newline
+        offset += line.len() + 1; //  +1 for newline
     }
 
-    let mut best: Option<(usize, usize, usize)> = None; // (line_idx, dist, count_at_dist)
+    let mut best: Option<(usize, usize, usize)> = None; //  (line_idx, dist, count_at_dist)
     let mut best_count = 0usize;
 
     for start in 0..=(hay_lines.len() - n_lines) {
@@ -856,7 +856,7 @@ fn fuzzy_find(haystack: &str, needle: &str, max_total: usize) -> Option<(usize, 
             let byte_start = line_byte_offsets[line_idx];
             let end_line = line_idx + n_lines - 1;
             let byte_end = line_byte_offsets[end_line] + hay_lines[end_line].len();
-            // Include trailing newline if present
+            //  Include trailing newline if present
             let byte_end = if byte_end < haystack.len() && haystack.as_bytes()[byte_end] == b'\n' {
                 byte_end
             } else {
@@ -868,39 +868,39 @@ fn fuzzy_find(haystack: &str, needle: &str, max_total: usize) -> Option<(usize, 
     }
 }
 
-/// Wildcard gap type in an ellipsis pattern.
+///  Wildcard gap type in an ellipsis pattern.
 #[derive(Debug, Clone, PartialEq)]
 enum EllipsisGap {
-    /// `...` — match smallest arbitrary text
+    ///  `...` — match smallest arbitrary text
     Any,
-    /// `{ ... }` on its own line — match a brace-balanced block (from `{` to matching `}`)
+    ///  `{ ... }` on its own line — match a brace-balanced block (from `{` to matching `}`)
     BraceBlock,
-    /// `{ ... }` at end of a line (inline) — literal prefix + brace-balanced block
+    ///  `{ ... }` at end of a line (inline) — literal prefix + brace-balanced block
     InlineBraceBlock,
-    /// `// ...` — match a block of doc comments (`///` lines)
+    ///  `//  ...` — match a block of doc comments (`///` lines)
     DocComment,
 }
 
-/// A segment is either a literal string or a gap (wildcard).
+///  A segment is either a literal string or a gap (wildcard).
 #[derive(Debug, Clone)]
 enum EllipsisPart {
     Literal(String),
     Gap(EllipsisGap),
 }
 
-/// Split old_string on ellipsis wildcards.
-/// Recognized patterns:
-/// - A line whose trimmed content is `...` → Gap(Any)
-/// - A line whose trimmed content is `{ ... }` or `{...}` → Gap(BraceBlock)
-/// - A line ending with `{ ... }` or `{...}` (inline) → literal prefix + Gap(BraceBlock)
-/// - A line whose trimmed content is `// ...` → Gap(DocComment)
-/// Returns None if no wildcards are found.
+///  Split old_string on ellipsis wildcards.
+///  Recognized patterns:
+///  - A line whose trimmed content is `...` → Gap(Any)
+///  - A line whose trimmed content is `{ ... }` or `{...}` → Gap(BraceBlock)
+///  - A line ending with `{ ... }` or `{...}` (inline) → literal prefix + Gap(BraceBlock)
+///  - A line whose trimmed content is `//  ...` → Gap(DocComment)
+///  Returns None if no wildcards are found.
 fn split_on_ellipsis(old_string: &str) -> Option<Vec<EllipsisPart>> {
     let lines: Vec<&str> = old_string.lines().collect();
     let has_wildcard = lines.iter().any(|l| {
         let t = l.trim();
         t == "..." || t == "{ ... }" || t == "{...}"
-            || t == "// ..."
+            || t == "//  ..."
             || t.ends_with("{ ... }") || t.ends_with("{...}")
     });
     if !has_wildcard {
@@ -918,7 +918,7 @@ fn split_on_ellipsis(old_string: &str) -> Option<Vec<EllipsisPart>> {
             }
             current.clear();
             parts.push(EllipsisPart::Gap(EllipsisGap::Any));
-        } else if t == "// ..." {
+        } else if t == "//  ..." {
             let text = current.join("\n");
             if !text.is_empty() {
                 parts.push(EllipsisPart::Literal(text));
@@ -933,10 +933,10 @@ fn split_on_ellipsis(old_string: &str) -> Option<Vec<EllipsisPart>> {
             current.clear();
             parts.push(EllipsisPart::Gap(EllipsisGap::BraceBlock));
         } else if t.ends_with("{ ... }") || t.ends_with("{...}") {
-            // Inline trailing brace block: split line at the `{`
+            //  Inline trailing brace block: split line at the `{`
             let suffix = if t.ends_with("{ ... }") { "{ ... }" } else { "{...}" };
             let prefix = &line[..line.len() - suffix.len()];
-            // Add prefix (with preceding lines) as literal
+            //  Add prefix (with preceding lines) as literal
             current.push(prefix);
             let text = current.join("\n");
             if !text.is_empty() {
@@ -955,8 +955,8 @@ fn split_on_ellipsis(old_string: &str) -> Option<Vec<EllipsisPart>> {
     Some(parts)
 }
 
-/// Find the byte offset right after the matching `}` for a `{` at `start` in `text`.
-/// `start` should point to a position where we search for the first `{`.
+///  Find the byte offset right after the matching `}` for a `{` at `start` in `text`.
+///  `start` should point to a position where we search for the first `{`.
 fn find_matching_brace(text: &str, start: usize) -> Option<usize> {
     let mut depth = 0i32;
     let mut found_open = false;
@@ -975,11 +975,11 @@ fn find_matching_brace(text: &str, start: usize) -> Option<usize> {
     None
 }
 
-/// Find a literal segment (possibly multi-line) in haystack starting from `from_byte`,
-/// ignoring leading/trailing whitespace per line and skipping blank lines in both
-/// the pattern and haystack.
-/// If `prefix_last_line` is true, the last line matches as a prefix (for inline `{ ... }`).
-/// Returns (start_byte, end_byte) of first match.
+///  Find a literal segment (possibly multi-line) in haystack starting from `from_byte`,
+///  ignoring leading/trailing whitespace per line and skipping blank lines in both
+///  the pattern and haystack.
+///  If `prefix_last_line` is true, the last line matches as a prefix (for inline `{ ... }`).
+///  Returns (start_byte, end_byte) of first match.
 fn find_literal_normalized(
     haystack: &str,
     literal: &str,
@@ -991,7 +991,7 @@ fn find_literal_normalized(
         return Some((from_byte, from_byte));
     }
 
-    // Filter out blank lines from literal, trim remaining
+    //  Filter out blank lines from literal, trim remaining
     let lit_trimmed: Vec<&str> = lit_lines.iter()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
@@ -1000,7 +1000,7 @@ fn find_literal_normalized(
         return None;
     }
 
-    // Build line index for haystack: (byte_offset, line_text)
+    //  Build line index for haystack: (byte_offset, line_text)
     let mut hay_lines: Vec<(usize, &str)> = Vec::new();
     let mut offset = 0;
     for line in haystack.lines() {
@@ -1013,10 +1013,10 @@ fn find_literal_normalized(
     for start_idx in 0..hay_lines.len() {
         let (line_start, _) = hay_lines[start_idx];
         if line_start < from_byte { continue; }
-        // Skip blank haystack lines as potential start
+        //  Skip blank haystack lines as potential start
         if hay_lines[start_idx].1.trim().is_empty() { continue; }
 
-        // Try to match: consume haystack lines, skipping blanks
+        //  Try to match: consume haystack lines, skipping blanks
         let mut lit_pos = 0;
         let mut hay_pos = start_idx;
         let mut last_matched_hay = start_idx;
@@ -1024,7 +1024,7 @@ fn find_literal_normalized(
         while lit_pos < n && hay_pos < hay_lines.len() {
             let hay_t = hay_lines[hay_pos].1.trim();
             if hay_t.is_empty() {
-                hay_pos += 1; // skip blank haystack line
+                hay_pos += 1; //  skip blank haystack line
                 continue;
             }
             let lit_t = lit_trimmed[lit_pos];
@@ -1059,7 +1059,7 @@ fn find_literal_normalized(
     None
 }
 
-/// Find a literal in haystack ignoring indent, returning all matches (for ambiguity check).
+///  Find a literal in haystack ignoring indent, returning all matches (for ambiguity check).
 fn find_all_literal_normalized(
     haystack: &str,
     literal: &str,
@@ -1068,20 +1068,20 @@ fn find_all_literal_normalized(
     let mut from = 0;
     while let Some((start, end)) = find_literal_normalized(haystack, literal, from, false) {
         results.push((start, end));
-        // Move past the start of this match to find next
-        // Advance by at least one line
+        //  Move past the start of this match to find next
+        //  Advance by at least one line
         from = haystack[start..].find('\n').map(|p| start + p + 1).unwrap_or(haystack.len());
     }
     results
 }
 
-/// Adjust new_string indentation to match the indentation at match_start in source.
+///  Adjust new_string indentation to match the indentation at match_start in source.
 fn adjust_new_indent(source: &str, match_start: usize, old_string: &str, new_string: &str) -> String {
-    // Find indent of source at match_start
+    //  Find indent of source at match_start
     let line_start = source[..match_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
     let src_indent = leading_whitespace(&source[line_start..]);
 
-    // Find indent of old_string's first non-empty line
+    //  Find indent of old_string's first non-empty line
     let old_indent = old_string.lines()
         .find(|l| !l.trim().is_empty())
         .map(leading_whitespace)
@@ -1106,9 +1106,9 @@ fn adjust_new_indent(source: &str, match_start: usize, old_string: &str, new_str
     }).collect::<Vec<_>>().join("\n")
 }
 
-/// Skip past a block of doc comment lines (`///`) starting from `from` byte position.
-/// Also skips blank lines before and within the doc block.
-/// Returns the byte position after the doc comment block, or `from` if no doc found.
+///  Skip past a block of doc comment lines (`///`) starting from `from` byte position.
+///  Also skips blank lines before and within the doc block.
+///  Returns the byte position after the doc comment block, or `from` if no doc found.
 fn skip_doc_comment(haystack: &str, from: usize) -> usize {
     let rest = &haystack[from..];
     let mut consumed = 0;
@@ -1118,7 +1118,7 @@ fn skip_doc_comment(haystack: &str, from: usize) -> usize {
         let trimmed = line.trim();
         if trimmed.starts_with("///") {
             saw_doc = true;
-            consumed += line.len() + 1; // +1 for newline
+            consumed += line.len() + 1; //  +1 for newline
         } else if trimmed.is_empty() {
             consumed += line.len() + 1;
         } else {
@@ -1129,7 +1129,7 @@ fn skip_doc_comment(haystack: &str, from: usize) -> usize {
     if saw_doc { from + consumed.min(haystack.len() - from) } else { from }
 }
 
-/// Check whether there are `///` doc comment lines immediately before `start_byte`.
+///  Check whether there are `///` doc comment lines immediately before `start_byte`.
 fn has_doc_comment(source: &str, start_byte: usize) -> bool {
     let before = &source[..start_byte];
     for line in before.lines().rev() {
@@ -1145,9 +1145,9 @@ fn has_doc_comment(source: &str, start_byte: usize) -> bool {
     false
 }
 
-/// Find the start of a doc comment block (`///` lines) that ends just before `pos`.
-/// Skips blank lines between `pos` and the doc block.
-/// Returns `pos` if no doc comments are found.
+///  Find the start of a doc comment block (`///` lines) that ends just before `pos`.
+///  Skips blank lines between `pos` and the doc block.
+///  Returns `pos` if no doc comments are found.
 fn find_doc_start_before(haystack: &str, pos: usize) -> usize {
     let before = &haystack[..pos];
     let mut result = pos;
@@ -1169,7 +1169,7 @@ fn find_doc_start_before(haystack: &str, pos: usize) -> usize {
         return pos;
     }
 
-    // Trim leading blank lines — doc block starts at first `///` line
+    //  Trim leading blank lines — doc block starts at first `///` line
     while result < pos {
         if let Some(nl) = haystack[result..pos].find('\n') {
             let line = &haystack[result..result + nl];
@@ -1186,11 +1186,11 @@ fn find_doc_start_before(haystack: &str, pos: usize) -> usize {
     result
 }
 
-/// Find all (start, end) byte spans in `haystack` that match the ellipsis pattern.
-/// Matching ignores leading/trailing whitespace per line.
-/// `...` gaps match the smallest text; `{ ... }` gaps match a brace-balanced block.
+///  Find all (start, end) byte spans in `haystack` that match the ellipsis pattern.
+///  Matching ignores leading/trailing whitespace per line.
+///  `...` gaps match the smallest text; `{ ... }` gaps match a brace-balanced block.
 fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usize)> {
-    // Collect literal segments with their part index
+    //  Collect literal segments with their part index
     let literals: Vec<(usize, &str)> = parts.iter().enumerate().filter_map(|(i, p)| {
         if let EllipsisPart::Literal(s) = p {
             if !s.is_empty() { return Some((i, s.as_str())); }
@@ -1203,7 +1203,7 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
     }
 
     let (first_idx, first_lit) = literals[0];
-    // Check if the part after the first literal is an InlineBraceBlock
+    //  Check if the part after the first literal is an InlineBraceBlock
     let first_prefix = first_idx + 1 < parts.len()
         && matches!(&parts[first_idx + 1], EllipsisPart::Gap(EllipsisGap::InlineBraceBlock));
     let mut results = Vec::new();
@@ -1213,8 +1213,8 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
         let mut current_end = seg_end;
         let mut valid = true;
 
-        // If the first gap (before first literal) is DocComment, extend match backwards
-        // to include the doc comment block
+        //  If the first gap (before first literal) is DocComment, extend match backwards
+        //  to include the doc comment block
         let actual_start = if first_idx > 0 && matches!(&parts[first_idx - 1], EllipsisPart::Gap(EllipsisGap::DocComment)) {
             find_doc_start_before(haystack, match_start)
         } else {
@@ -1222,7 +1222,7 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
         };
 
         for &(part_idx, lit) in &literals[1..] {
-            // Determine the gap type before this literal
+            //  Determine the gap type before this literal
             let gap = if part_idx > 0 {
                 match &parts[part_idx - 1] {
                     EllipsisPart::Gap(g) => Some(g),
@@ -1231,7 +1231,7 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
             } else {
                 None
             };
-            // Check if the part after this literal is an InlineBraceBlock
+            //  Check if the part after this literal is an InlineBraceBlock
             let this_prefix = part_idx + 1 < parts.len()
                 && matches!(&parts[part_idx + 1], EllipsisPart::Gap(EllipsisGap::InlineBraceBlock));
 
@@ -1259,7 +1259,7 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
                     }
                 }
                 _ => {
-                    // Regular `...` gap or no gap — find nearest occurrence
+                    //  Regular `...` gap or no gap — find nearest occurrence
                     if let Some((_seg_start, seg_end)) = find_literal_normalized(haystack, lit, current_end, this_prefix) {
                         current_end = seg_end;
                     } else {
@@ -1270,7 +1270,7 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
             }
         }
 
-        // If the last part is a brace block gap, consume it
+        //  If the last part is a brace block gap, consume it
         if valid {
             match parts.last() {
                 Some(EllipsisPart::Gap(EllipsisGap::BraceBlock | EllipsisGap::InlineBraceBlock)) => {
@@ -1281,7 +1281,7 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
                     }
                 }
                 Some(EllipsisPart::Gap(EllipsisGap::DocComment)) => {
-                    // Trailing doc comment gap — skip doc comments at the end
+                    //  Trailing doc comment gap — skip doc comments at the end
                     current_end = skip_doc_comment(haystack, current_end);
                 }
                 _ => {}
@@ -1291,27 +1291,27 @@ fn find_with_ellipsis(haystack: &str, parts: &[EllipsisPart]) -> Vec<(usize, usi
         if valid {
             results.push((actual_start, current_end));
         }
-        // Advance search past this match start
+        //  Advance search past this match start
         search_from = haystack[match_start..].find('\n').map(|p| match_start + p + 1).unwrap_or(haystack.len());
     }
 
     results
 }
 
-/// Get the leading whitespace of a line.
+///  Get the leading whitespace of a line.
 fn leading_whitespace(line: &str) -> &str {
     let trimmed = line.trim_start();
     &line[..line.len() - trimmed.len()]
 }
 
-/// Collect byte ranges of string literals and comments using tree-sitter,
-/// so we can skip braces inside them during depth counting.
+///  Collect byte ranges of string literals and comments using tree-sitter,
+///  so we can skip braces inside them during depth counting.
 fn collect_skip_ranges(node: &tree_sitter::Node, ranges: &mut Vec<(usize, usize)>) {
     match node.kind() {
         "string_literal" | "raw_string_literal" | "char_literal"
         | "line_comment" | "block_comment" => {
             ranges.push((node.start_byte(), node.end_byte()));
-            return; // don't recurse into children
+            return; //  don't recurse into children
         }
         _ => {}
     }
@@ -1321,12 +1321,12 @@ fn collect_skip_ranges(node: &tree_sitter::Node, ranges: &mut Vec<(usize, usize)
     }
 }
 
-/// Collect byte positions of `{` and `}` tokens that belong to `verus_block` nodes,
-/// so we can skip them during depth counting (verus! { } content is at parent indent).
-/// The braces are inside the `declaration_list` child of `verus_block`.
+///  Collect byte positions of `{` and `}` tokens that belong to `verus_block` nodes,
+///  so we can skip them during depth counting (verus! { } content is at parent indent).
+///  The braces are inside the `declaration_list` child of `verus_block`.
 fn collect_verus_brace_positions(node: &tree_sitter::Node, positions: &mut Vec<usize>) {
     if node.kind() == "verus_block" {
-        // Find the declaration_list child and get its { } braces
+        //  Find the declaration_list child and get its { } braces
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "declaration_list" {
@@ -1346,16 +1346,16 @@ fn collect_verus_brace_positions(node: &tree_sitter::Node, positions: &mut Vec<u
     }
 }
 
-/// Collect extra indentation for Verus clause lines (requires/ensures/decreases/recommends).
-/// Returns a map of row number → extra indent (in spaces).
-/// Keyword lines get +4, clause item lines get +8.
+///  Collect extra indentation for Verus clause lines (requires/ensures/decreases/recommends).
+///  Returns a map of row number → extra indent (in spaces).
+///  Keyword lines get +4, clause item lines get +8.
 fn collect_clause_indent(node: &tree_sitter::Node, extra: &mut std::collections::HashMap<usize, usize>) {
     match node.kind() {
         "requires_clause" | "ensures_clause" | "decreases_clause" | "recommends_clause" => {
             let start_row = node.start_position().row;
             let end_row = node.end_position().row;
 
-            // Find keyword row
+            //  Find keyword row
             let mut keyword_row = start_row;
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
@@ -1371,7 +1371,7 @@ fn collect_clause_indent(node: &tree_sitter::Node, extra: &mut std::collections:
                 let indent = if row == keyword_row { 4 } else { 8 };
                 extra.entry(row).and_modify(|v| *v = (*v).max(indent)).or_insert(indent);
             }
-            return; // don't recurse into clause children
+            return; //  don't recurse into clause children
         }
         _ => {}
     }
@@ -1381,10 +1381,10 @@ fn collect_clause_indent(node: &tree_sitter::Node, extra: &mut std::collections:
     }
 }
 
-/// Re-indent source code based on brace depth.
-/// Uses tree-sitter to identify string/comment regions, verus! block braces
-/// (which don't contribute to indentation), and Verus clauses (requires/ensures/
-/// decreases get extra indent). Only `{`/`}` affect depth, not parens.
+///  Re-indent source code based on brace depth.
+///  Uses tree-sitter to identify string/comment regions, verus! block braces
+///  (which don't contribute to indentation), and Verus clauses (requires/ensures/
+///  decreases get extra indent). Only `{`/`}` affect depth, not parens.
 pub fn auto_indent(source: &str) -> String {
     let mut parser = tree_sitter::Parser::new();
     let (skip_ranges, verus_braces, clause_extra) = if parser.set_language(&tree_sitter_verus::LANGUAGE.into()).is_ok() {
@@ -1431,8 +1431,8 @@ pub fn auto_indent(source: &str) -> String {
             continue;
         }
 
-        // Count leading `}` to decrease depth before indenting this line
-        // (but only structural braces, not in strings/comments or verus block braces)
+        //  Count leading `}` to decrease depth before indenting this line
+        //  (but only structural braces, not in strings/comments or verus block braces)
         let mut leading_closes = 0i32;
         for (i, ch) in line.char_indices() {
             if ch.is_whitespace() { continue; }
@@ -1449,7 +1449,7 @@ pub fn auto_indent(source: &str) -> String {
         let indent = " ".repeat(total_indent);
         result_lines.push(format!("{}{}", indent, trimmed));
 
-        // Update depth based on braces in this line
+        //  Update depth based on braces in this line
         for (i, ch) in line.char_indices() {
             let abs_pos = byte_offset + i;
             if is_skipped(abs_pos) || is_verus_brace(abs_pos) { continue; }
@@ -1464,7 +1464,7 @@ pub fn auto_indent(source: &str) -> String {
         row += 1;
     }
 
-    // Preserve trailing newline if original had one
+    //  Preserve trailing newline if original had one
     let mut result = result_lines.join("\n");
     if source.ends_with('\n') && !result.ends_with('\n') {
         result.push('\n');
@@ -1472,9 +1472,9 @@ pub fn auto_indent(source: &str) -> String {
     result
 }
 
-/// File-level edit: find `old_string` anywhere in the source and replace it.
-/// Matching ignores leading/trailing whitespace per line (indent-insensitive).
-/// Supports ellipsis wildcards (`...`, `{ ... }`) and fuzzy matching.
+///  File-level edit: find `old_string` anywhere in the source and replace it.
+///  Matching ignores leading/trailing whitespace per line (indent-insensitive).
+///  Supports ellipsis wildcards (`...`, `{ ... }`) and fuzzy matching.
 pub fn edit_file(
     source: &str,
     old_string: &str,
@@ -1488,7 +1488,7 @@ fn edit_file_inner(
     old_string: &str,
     new_string: &str,
 ) -> Result<String, String> {
-    // 1. Exact match (fast path)
+    //  1. Exact match (fast path)
     let exact: Vec<usize> = source
         .match_indices(old_string)
         .map(|(pos, _)| pos)
@@ -1511,9 +1511,9 @@ fn edit_file_inner(
         ));
     }
 
-    // 2. Indent-normalized matching (with or without ellipsis wildcards)
+    //  2. Indent-normalized matching (with or without ellipsis wildcards)
     if let Some(segments) = split_on_ellipsis(old_string) {
-        // Has wildcards — use normalized ellipsis matching
+        //  Has wildcards — use normalized ellipsis matching
         let matches = find_with_ellipsis(source, &segments);
         if matches.len() == 1 {
             let (start, end) = matches[0];
@@ -1526,7 +1526,7 @@ fn edit_file_inner(
             ));
         }
     } else {
-        // No wildcards — use normalized line matching
+        //  No wildcards — use normalized line matching
         let matches = find_all_literal_normalized(source, old_string);
         if matches.len() == 1 {
             let (start, end) = matches[0];
@@ -1540,7 +1540,7 @@ fn edit_file_inner(
         }
     }
 
-    // 3. Fuzzy matching (only for substantial old_strings)
+    //  3. Fuzzy matching (only for substantial old_strings)
     let max_total = 10;
     if old_string.len() >= 150 {
         if let Some((offset, matched_len, _dist)) = fuzzy_find(source, old_string, max_total) {
@@ -1557,9 +1557,9 @@ fn edit_file_inner(
     Err("old_string not found in file (no exact, ellipsis, indent-normalized, or fuzzy match)".to_string())
 }
 
-/// Scoped edit: find `old_string` within the function's source text and replace it.
-/// Matching ignores leading/trailing whitespace per line (indent-insensitive).
-/// Supports ellipsis wildcards (`...`, `{ ... }`) and fuzzy matching.
+///  Scoped edit: find `old_string` within the function's source text and replace it.
+///  Matching ignores leading/trailing whitespace per line (indent-insensitive).
+///  Supports ellipsis wildcards (`...`, `{ ... }`) and fuzzy matching.
 pub fn edit_fn(
     source: &str,
     name: &str,
@@ -1579,7 +1579,7 @@ fn edit_fn_inner(
     let found = find_fn(&items, name)?;
     let fn_text = &source[found.start_byte..found.end_byte];
 
-    // 1. Exact match (fast path)
+    //  1. Exact match (fast path)
     let exact: Vec<usize> = fn_text
         .match_indices(old_string)
         .map(|(pos, _)| pos)
@@ -1609,7 +1609,7 @@ fn edit_fn_inner(
         ));
     }
 
-    // 2. Indent-normalized matching (with or without ellipsis wildcards)
+    //  2. Indent-normalized matching (with or without ellipsis wildcards)
     if let Some(segments) = split_on_ellipsis(old_string) {
         let matches = find_with_ellipsis(fn_text, &segments);
         if matches.len() == 1 {
@@ -1648,7 +1648,7 @@ fn edit_fn_inner(
         }
     }
 
-    // 3. Fuzzy matching (only for substantial old_strings)
+    //  3. Fuzzy matching (only for substantial old_strings)
     let max_total = 10;
     if old_string.len() >= 150 {
         if let Some((offset, matched_len, _dist)) = fuzzy_find(fn_text, old_string, max_total) {
@@ -1674,7 +1674,7 @@ fn edit_fn_inner(
     ))
 }
 
-/// Replace an entire function's source code with new code.
+///  Replace an entire function's source code with new code.
 pub fn replace_fn(source: &str, name: &str, new_fn_source: &str) -> Result<String, String> {
     let items = parse_file(source)?;
     let found = find_fn(&items, name)?;
@@ -1687,12 +1687,12 @@ pub fn replace_fn(source: &str, name: &str, new_fn_source: &str) -> Result<Strin
     )))
 }
 
-/// Delete a function by name, including preceding doc comments and cleanup.
+///  Delete a function by name, including preceding doc comments and cleanup.
 pub fn delete_fn(source: &str, name: &str) -> Result<String, String> {
     let items = parse_file(source)?;
     let found = find_fn(&items, name)?;
 
-    // Extend start backwards to capture doc comments and preceding blank line
+    //  Extend start backwards to capture doc comments and preceding blank line
     let mut start = found.start_byte;
     let before = &source[..start];
     let lines: Vec<&str> = before.lines().collect();
@@ -1701,11 +1701,11 @@ pub fn delete_fn(source: &str, name: &str) -> Result<String, String> {
         k -= 1;
         let line = lines[k].trim();
         if line.starts_with("///") || line.starts_with("#[") {
-            // Include this line
+            //  Include this line
             start = before
                 .rfind(lines[k])
                 .map(|pos| {
-                    // Find the actual start of this line
+                    //  Find the actual start of this line
                     before[..pos]
                         .rfind('\n')
                         .map(|nl| nl + 1)
@@ -1713,7 +1713,7 @@ pub fn delete_fn(source: &str, name: &str) -> Result<String, String> {
                 })
                 .unwrap_or(start);
         } else if line.is_empty() {
-            // Include one blank line before doc comments
+            //  Include one blank line before doc comments
             start = before[..before.len().saturating_sub(1)]
                 .rfind('\n')
                 .map(|nl| nl + 1)
@@ -1725,14 +1725,14 @@ pub fn delete_fn(source: &str, name: &str) -> Result<String, String> {
     }
 
     let mut end = found.end_byte;
-    // Include trailing newline if present
+    //  Include trailing newline if present
     if end < source.len() && source.as_bytes()[end] == b'\n' {
         end += 1;
     }
 
     let mut result = format!("{}{}", &source[..start], &source[end..]);
 
-    // Clean up double blank lines
+    //  Clean up double blank lines
     while result.contains("\n\n\n") {
         result = result.replace("\n\n\n", "\n\n");
     }
@@ -1740,9 +1740,9 @@ pub fn delete_fn(source: &str, name: &str) -> Result<String, String> {
     Ok(result)
 }
 
-/// Add a function to the source. If it's a verus function (spec/proof/exec),
-/// it goes inside a verus! block. If `after` is specified, insert after that
-/// function.
+///  Add a function to the source. If it's a verus function (spec/proof/exec),
+///  it goes inside a verus! block. If `after` is specified, insert after that
+///  function.
 pub fn add_fn(source: &str, new_fn_source: &str, after: Option<&str>) -> Result<String, String> {
     let items = parse_file(source)?;
     let is_verus = detect_verus_fn(new_fn_source);
@@ -1755,8 +1755,8 @@ pub fn add_fn(source: &str, new_fn_source: &str, after: Option<&str>) -> Result<
     result.map(|r| auto_indent(&r))
 }
 
-/// Add a function inside a trait or impl block, identified by name.
-/// `inside` matches against trait name, type name, or "Trait for Type" signature.
+///  Add a function inside a trait or impl block, identified by name.
+///  `inside` matches against trait name, type name, or "Trait for Type" signature.
 pub fn add_fn_inside(
     source: &str,
     new_fn_source: &str,
@@ -1774,12 +1774,12 @@ fn add_fn_inside_inner(
 ) -> Result<String, String> {
     let items = parse_file(source)?;
 
-    // If `after` is provided, find that function and insert after it
-    // (only if it's inside the target block)
+    //  If `after` is provided, find that function and insert after it
+    //  (only if it's inside the target block)
     if let Some(after_name) = after {
         if let Ok(after_fn) = find_fn(&items, after_name) {
             let insert_pos = after_fn.end_byte;
-            // Detect indentation from after_fn
+            //  Detect indentation from after_fn
             let line_start = source[..after_fn.start_byte].rfind('\n').map(|p| p + 1).unwrap_or(0);
             let indent: String = source[line_start..]
                 .chars()
@@ -1804,7 +1804,7 @@ fn add_fn_inside_inner(
 
     let inside_stripped = strip_generics(inside);
 
-    // Search traits first
+    //  Search traits first
     for tr in &items.traits {
         let tr_stripped = strip_generics(&tr.name);
         if tr.name == inside || tr_stripped == inside_stripped {
@@ -1812,7 +1812,7 @@ fn add_fn_inside_inner(
         }
     }
 
-    // Search impls: match type_name, or "Trait for Type" pattern
+    //  Search impls: match type_name, or "Trait for Type" pattern
     for im in &items.impls {
         let im_type_stripped = strip_generics(&im.type_name);
         let sig_match = if let Some(ref trait_name) = im.trait_name {
@@ -1829,7 +1829,7 @@ fn add_fn_inside_inner(
         }
     }
 
-    // List available targets
+    //  List available targets
     let mut targets = Vec::new();
     for tr in &items.traits {
         targets.push(format!("trait {}", tr.name));
@@ -1844,23 +1844,23 @@ fn add_fn_inside_inner(
     ))
 }
 
-/// Insert source before the closing `}` of a block ending at `end_byte`.
+///  Insert source before the closing `}` of a block ending at `end_byte`.
 fn insert_before_closing_brace(
     source: &str,
     end_byte: usize,
     new_fn_source: &str,
 ) -> Result<String, String> {
-    // Find the closing `}` — it's at end_byte - 1 (or nearby with trailing whitespace)
+    //  Find the closing `}` — it's at end_byte - 1 (or nearby with trailing whitespace)
     let close_pos = source[..end_byte]
         .rfind('}')
         .ok_or_else(|| "Could not find closing brace of block".to_string())?;
 
-    // Detect indentation from the block body
+    //  Detect indentation from the block body
     let before_close = &source[..close_pos];
     let last_newline = before_close.rfind('\n').unwrap_or(0);
     let existing_content = before_close[last_newline..].trim();
 
-    // Find the indentation used in the block (look at existing methods or use 4 spaces)
+    //  Find the indentation used in the block (look at existing methods or use 4 spaces)
     let indent = detect_block_indent(source, close_pos);
 
     let indented: String = new_fn_source
@@ -1889,9 +1889,9 @@ fn insert_before_closing_brace(
     ))
 }
 
-/// Detect indentation level used inside a block by looking at lines before close_pos.
+///  Detect indentation level used inside a block by looking at lines before close_pos.
 fn detect_block_indent(source: &str, close_pos: usize) -> String {
-    // Walk backwards from close_pos to find a non-empty line inside the block
+    //  Walk backwards from close_pos to find a non-empty line inside the block
     for line in source[..close_pos].lines().rev() {
         let trimmed = line.trim();
         if !trimmed.is_empty() && (trimmed.starts_with("fn ")
@@ -1909,10 +1909,10 @@ fn detect_block_indent(source: &str, close_pos: usize) -> String {
             return leading;
         }
     }
-    "    ".to_string() // default 4 spaces
+    "    ".to_string() //  default 4 spaces
 }
 
-/// List all use statements in a file.
+///  List all use statements in a file.
 pub fn list_uses(source: &str) -> Result<String, String> {
     let items = parse_file(source)?;
     if items.uses.is_empty() {
@@ -1922,22 +1922,22 @@ pub fn list_uses(source: &str) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
-/// Produce an indented tree overview of a file's structure.
-/// Uses a single `-` per item, indented to show nesting.
-/// Output looks like:
-/// ```
-/// - use vstd::prelude::*
-/// - mod submodule
-/// - fn my_function
-/// - struct MyStruct
-/// - impl MyStruct
-///   - fn method1
-///   - fn method2
-/// ```
+///  Produce an indented tree overview of a file's structure.
+///  Uses a single `-` per item, indented to show nesting.
+///  Output looks like:
+///  ```
+///  - use vstd::prelude::*
+///  - mod submodule
+///  - fn my_function
+///  - struct MyStruct
+///  - impl MyStruct
+///    - fn method1
+///    - fn method2
+///  ```
 pub fn list_items_tree(source: &str) -> Result<String, String> {
     let items = parse_file(source)?;
 
-    // Collect impl/trait method byte ranges to skip in top-level function list
+    //  Collect impl/trait method byte ranges to skip in top-level function list
     let nested_fn_bytes: std::collections::HashSet<usize> = items
         .impls
         .iter()
@@ -1945,15 +1945,15 @@ pub fn list_items_tree(source: &str) -> Result<String, String> {
         .chain(items.traits.iter().flat_map(|t| t.methods.iter().map(|m| m.start_byte)))
         .collect();
 
-    // Collect (start_byte, lines) entries
+    //  Collect (start_byte, lines) entries
     let mut entries: Vec<(usize, Vec<String>)> = Vec::new();
 
-    // Use statements
+    //  Use statements
     for u in &items.uses {
         entries.push((u.start_byte, vec![format!("- {}", u.full_text.trim())]));
     }
 
-    // Top-level functions (not inside impl/trait)
+    //  Top-level functions (not inside impl/trait)
     for f in &items.functions {
         if nested_fn_bytes.contains(&f.start_byte) {
             continue;
@@ -1967,12 +1967,12 @@ pub fn list_items_tree(source: &str) -> Result<String, String> {
         entries.push((f.start_byte, vec![format!("- {} {}", kind_prefix, f.name)]));
     }
 
-    // Types (struct/enum/type)
+    //  Types (struct/enum/type)
     for t in &items.types {
         entries.push((t.start_byte, vec![format!("- {} {}", t.kind, t.name)]));
     }
 
-    // Traits
+    //  Traits
     for t in &items.traits {
         let mut lines = vec![format!("- trait {}", t.name)];
         for m in &t.methods {
@@ -1987,7 +1987,7 @@ pub fn list_items_tree(source: &str) -> Result<String, String> {
         entries.push((t.start_byte, lines));
     }
 
-    // Impls
+    //  Impls
     for im in &items.impls {
         let header = if let Some(ref trait_name) = im.trait_name {
             format!("- impl {} for {}", trait_name, im.type_name)
@@ -2011,10 +2011,10 @@ pub fn list_items_tree(source: &str) -> Result<String, String> {
         return Ok("Empty file.".to_string());
     }
 
-    // Sort by source position
+    //  Sort by source position
     entries.sort_by_key(|(byte, _)| *byte);
 
-    // Helper: check if a byte offset falls inside any verus block
+    //  Helper: check if a byte offset falls inside any verus block
     let in_verus = |byte: usize| -> bool {
         items.verus_blocks.iter().any(|vb| byte >= vb.body_start_byte && byte < vb.body_end_byte)
     };
@@ -2040,19 +2040,19 @@ pub fn list_items_tree(source: &str) -> Result<String, String> {
     Ok(output.join("\n"))
 }
 
-/// Add a use statement. If path has no `::`, it needs to be resolved by the
-/// caller (server handler). This function handles the raw insertion.
+///  Add a use statement. If path has no `::`, it needs to be resolved by the
+///  caller (server handler). This function handles the raw insertion.
 pub fn add_use(source: &str, use_path: &str) -> Result<String, String> {
     let items = parse_file(source)?;
 
-    // Build the use statement
+    //  Build the use statement
     let use_stmt = if use_path.starts_with("use ") {
         use_path.to_string()
     } else {
         format!("use {};", use_path)
     };
 
-    // Check for duplicates
+    //  Check for duplicates
     for u in &items.uses {
         if u.full_text.trim() == use_stmt.trim()
             || u.full_text.trim_end_matches(';').trim() == use_path.trim_end_matches(';').trim()
@@ -2061,10 +2061,10 @@ pub fn add_use(source: &str, use_path: &str) -> Result<String, String> {
         }
     }
 
-    // Insert after last use declaration, or at top if none
+    //  Insert after last use declaration, or at top if none
     if let Some(last_use) = items.uses.last() {
         let insert_pos = last_use.end_byte;
-        // Find end of line
+        //  Find end of line
         let line_end = source[insert_pos..]
             .find('\n')
             .map(|p| insert_pos + p + 1)
@@ -2076,12 +2076,12 @@ pub fn add_use(source: &str, use_path: &str) -> Result<String, String> {
             &source[line_end..]
         ))
     } else {
-        // No existing use statements — insert at top of file
+        //  No existing use statements — insert at top of file
         Ok(format!("{}\n\n{}", use_stmt, source))
     }
 }
 
-/// Remove a use statement by path substring match.
+///  Remove a use statement by path substring match.
 pub fn remove_use(source: &str, path: &str) -> Result<String, String> {
     let items = parse_file(source)?;
 
@@ -2108,14 +2108,14 @@ pub fn remove_use(source: &str, path: &str) -> Result<String, String> {
     let mut start = u.start_byte;
     let mut end = u.end_byte;
 
-    // Include trailing newline
+    //  Include trailing newline
     if end < source.len() && source.as_bytes()[end] == b'\n' {
         end += 1;
     }
 
-    // If there's a blank line before, consume it
+    //  If there's a blank line before, consume it
     if start > 0 && source.as_bytes()[start - 1] == b'\n' {
-        // Check if the line before is also blank
+        //  Check if the line before is also blank
         let before_start = source[..start - 1].rfind('\n').map(|p| p + 1).unwrap_or(0);
         if source[before_start..start - 1].trim().is_empty() {
             start = before_start;
@@ -2129,11 +2129,11 @@ pub fn remove_use(source: &str, path: &str) -> Result<String, String> {
     Ok(result)
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+//  ---------------------------------------------------------------------------
+//  Helpers
+//  ---------------------------------------------------------------------------
 
-/// Strip generic parameters from a name: `Foo<A, B>::bar` → `Foo::bar`
+///  Strip generic parameters from a name: `Foo<A, B>::bar` → `Foo::bar`
 fn strip_generics(s: &str) -> String {
     let mut result = String::new();
     let mut depth = 0usize;
@@ -2149,16 +2149,16 @@ fn strip_generics(s: &str) -> String {
     result
 }
 
-/// Find a function by name or qualified name. Returns an error if not found
-/// or if ambiguous.
+///  Find a function by name or qualified name. Returns an error if not found
+///  or if ambiguous.
 fn find_fn<'a>(items: &'a FileItems, name: &str) -> Result<&'a LocatedFn, String> {
-    // Normalize "impl Trait for Type::method" or "Trait for Type::method" → "Type::method"
+    //  Normalize "impl Trait for Type::method" or "Trait for Type::method" → "Type::method"
     let name = {
         let s = name.strip_prefix("impl ").unwrap_or(name);
         if let Some(after_for) = s.split_once(" for ").map(|(_, r)| r) {
             after_for
         } else if s != name && s.contains("::") {
-            // "impl Type::method" (no "for")
+            //  "impl Type::method" (no "for")
             s
         } else {
             name
@@ -2192,7 +2192,7 @@ fn find_fn<'a>(items: &'a FileItems, name: &str) -> Result<&'a LocatedFn, String
         }
         1 => Ok(matches[0]),
         _ => {
-            // If searching by bare name, check if exactly one matches qualified
+            //  If searching by bare name, check if exactly one matches qualified
             let qualified: Vec<&LocatedFn> = matches
                 .iter()
                 .filter(|f| f.qualified_name == name)
@@ -2202,7 +2202,7 @@ fn find_fn<'a>(items: &'a FileItems, name: &str) -> Result<&'a LocatedFn, String
                 return Ok(qualified[0]);
             }
 
-            // If all matches have the same qualified name (duplicates), return the last one
+            //  If all matches have the same qualified name (duplicates), return the last one
             let all_same = matches.iter().all(|f| f.qualified_name == matches[0].qualified_name);
             if all_same {
                 return Ok(matches.last().unwrap());
@@ -2219,27 +2219,27 @@ fn find_fn<'a>(items: &'a FileItems, name: &str) -> Result<&'a LocatedFn, String
     }
 }
 
-/// Detect if new function source is a verus function (has spec/proof/exec modifiers).
+///  Detect if new function source is a verus function (has spec/proof/exec modifiers).
 fn detect_verus_fn(fn_source: &str) -> bool {
-    // Try tree-sitter first
+    //  Try tree-sitter first
     if let Ok(items) = parse_file(fn_source) {
         if let Some(f) = items.functions.first() {
             return f.kind.is_some();
         }
     }
-    // Also try wrapping in verus! {}
+    //  Also try wrapping in verus! {}
     let wrapped = format!("verus! {{\n{}\n}}", fn_source);
     if let Ok(items) = parse_file(&wrapped) {
         if let Some(f) = items.functions.first() {
             return f.kind.is_some();
         }
     }
-    // Regex fallback
+    //  Regex fallback
     let re = regex::Regex::new(r"(?:pub\s+)?(?:open\s+)?(?:spec|proof|exec)\s+fn\s").unwrap();
     re.is_match(fn_source)
 }
 
-/// Add a verus function inside a verus! block.
+///  Add a verus function inside a verus! block.
 fn add_verus_fn(
     source: &str,
     new_fn_source: &str,
@@ -2247,10 +2247,10 @@ fn add_verus_fn(
     items: &FileItems,
 ) -> Result<String, String> {
     if let Some(after_name) = after {
-        // Insert after a specific function
+        //  Insert after a specific function
         let after_fn = find_fn(items, after_name)?;
 
-        // Check if after_fn is inside a verus block
+        //  Check if after_fn is inside a verus block
         let in_verus = items.verus_blocks.iter().any(|vb| {
             after_fn.start_byte >= vb.body_start_byte && after_fn.end_byte <= vb.body_end_byte
         });
@@ -2267,9 +2267,9 @@ fn add_verus_fn(
     }
 
     if let Some(vb) = items.verus_blocks.first() {
-        // Append before the closing `}` of the verus block body
+        //  Append before the closing `}` of the verus block body
         let insert_pos = vb.body_end_byte;
-        // Ensure proper spacing
+        //  Ensure proper spacing
         let before = &source[..insert_pos];
         let needs_newline = !before.ends_with('\n');
         let prefix = if needs_newline { "\n\n" } else { "\n" };
@@ -2282,9 +2282,9 @@ fn add_verus_fn(
             &source[insert_pos..]
         ))
     } else {
-        // No verus! block exists — create one after all use statements
+        //  No verus! block exists — create one after all use statements
         let insert_pos = if let Some(last_use) = items.uses.last() {
-            // After the last use statement
+            //  After the last use statement
             let after_use = last_use.end_byte;
             source[after_use..]
                 .find('\n')
@@ -2295,7 +2295,7 @@ fn add_verus_fn(
         };
 
         let verus_block = format!(
-            "\nverus! {{\n\n{}\n\n}} // verus!\n",
+            "\nverus! {{\n\n{}\n\n}} //  verus!\n",
             new_fn_source
         );
 
@@ -2308,7 +2308,7 @@ fn add_verus_fn(
     }
 }
 
-/// Add a regular (non-verus) function outside verus! blocks.
+///  Add a regular (non-verus) function outside verus! blocks.
 fn add_regular_fn(
     source: &str,
     new_fn_source: &str,
@@ -2326,7 +2326,7 @@ fn add_regular_fn(
         ));
     }
 
-    // Append at end of file
+    //  Append at end of file
     let trimmed = source.trim_end();
     Ok(format!("{}\n\n{}\n", trimmed, new_fn_source))
 }
@@ -2352,15 +2352,15 @@ mod tests {
 
     #[test]
     fn test_auto_indent_verus_block() {
-        let source = "verus! {\n\npub proof fn test(x: int)\n    requires\n        x > 0,\n{\n    assert(x > 0);\n}\n\n} // verus!\n";
+        let source = "verus! {\n\npub proof fn test(x: int)\n    requires\n        x > 0,\n{\n    assert(x > 0);\n}\n\n} //  verus!\n";
         let result = auto_indent(source);
-        // verus! braces don't add indentation — content stays at depth 0
+        //  verus! braces don't add indentation — content stays at depth 0
         assert!(result.contains("\npub proof fn test(x: int)"), "fn should be at depth 0");
-        // requires keyword gets +4 extra indent
+        //  requires keyword gets +4 extra indent
         assert!(result.contains("\n    requires"), "requires should be at +4");
-        // requires clause items get +8 extra indent
+        //  requires clause items get +8 extra indent
         assert!(result.contains("\n        x > 0,"), "clause items should be at +8");
-        // Body { } adds one level
+        //  Body { } adds one level
         assert!(result.contains("\n    assert(x > 0);"), "body should be at depth 1");
     }
 
@@ -2368,7 +2368,7 @@ mod tests {
     fn test_auto_indent_braces_in_string() {
         let source = "fn foo() {\n    let s = \"{ not a block }\";\n    let x = 1;\n}\n";
         let result = auto_indent(source);
-        // Braces in strings should not affect indentation
+        //  Braces in strings should not affect indentation
         assert_eq!(source, result);
     }
 
@@ -2378,30 +2378,30 @@ mod tests {
         let old = "   proof fn test(lo: int, hi: int)\n       decreases hi - lo, { ... }";
         let new = "   proof fn test(lo: int, hi: int)\n       requires lo >= 0,\n       decreases hi - lo, {\n           new_body();\n       }";
         let result = edit_file(source, old, new).unwrap();
-        // Should be properly auto-indented
+        //  Should be properly auto-indented
         assert!(result.contains("proof fn test(lo: int, hi: int)"));
         assert!(result.contains("requires lo >= 0,"));
     }
 
     #[test]
     fn test_auto_indent_requires_ensures() {
-        // Full function with requires + ensures inside verus! block
-        let source = "verus! {\n\nproof fn lemma(x: int, y: int)\nrequires\nx > 0,\ny > 0,\nensures\nx + y > 0,\n{\nassert(x + y > 0);\n}\n\n} // verus!\n";
+        //  Full function with requires + ensures inside verus! block
+        let source = "verus! {\n\nproof fn lemma(x: int, y: int)\nrequires\nx > 0,\ny > 0,\nensures\nx + y > 0,\n{\nassert(x + y > 0);\n}\n\n} //  verus!\n";
         let result = auto_indent(source);
-        // requires/ensures keywords at +4
+        //  requires/ensures keywords at +4
         assert!(result.contains("\n    requires"), "requires at +4");
         assert!(result.contains("\n    ensures"), "ensures at +4");
-        // clause items at +8
+        //  clause items at +8
         assert!(result.contains("\n        x > 0,"), "requires item at +8");
         assert!(result.contains("\n        y > 0,"), "requires item at +8");
         assert!(result.contains("\n        x + y > 0,"), "ensures item at +8");
-        // body at +4
+        //  body at +4
         assert!(result.contains("\n    assert(x + y > 0);"), "body at +4");
     }
 
     #[test]
     fn test_blank_line_insensitive_matching() {
-        // Source has blank lines between items; old_string doesn't
+        //  Source has blank lines between items; old_string doesn't
         let source = "fn foo() {\n    let x = 1;\n\n    let y = 2;\n}\n";
         let old = "let x = 1;\nlet y = 2;";
         let new = "let x = 1;\nlet y = 3;";
@@ -2411,38 +2411,38 @@ mod tests {
 
     #[test]
     fn test_doc_comment_wildcard() {
-        // `// ...` should match doc comment lines
-        let source = "/// Doc line 1\n/// Doc line 2\npub fn foo(x: int) {\n    body();\n}\n";
-        let old = "// ...\npub fn foo(x: int) { ... }";
-        let new = "/// Updated doc\npub fn foo(x: int, y: int) {\n    new_body();\n}";
+        //  `//  ...` should match doc comment lines
+        let source = "///  Doc line 1\n///  Doc line 2\npub fn foo(x: int) {\n    body();\n}\n";
+        let old = "//  ...\npub fn foo(x: int) { ... }";
+        let new = "///  Updated doc\npub fn foo(x: int, y: int) {\n    new_body();\n}";
         let result = edit_file(source, old, new).unwrap();
-        assert!(result.contains("/// Updated doc"), "doc comment should be replaced");
+        assert!(result.contains("///  Updated doc"), "doc comment should be replaced");
         assert!(result.contains("pub fn foo(x: int, y: int)"), "signature should be updated");
-        assert!(!result.contains("/// Doc line 1"), "old doc should be gone");
+        assert!(!result.contains("///  Doc line 1"), "old doc should be gone");
     }
 
     #[test]
     fn test_doc_comment_between_methods() {
-        // `// ...` between methods should skip doc comments
-        let source = "    spec fn degree() -> nat;\n\n    /// Doc for next\n    spec fn next() -> bool;\n";
-        let old = "spec fn degree() -> nat;\n// ...\nspec fn next() -> bool;";
-        let new = "spec fn degree() -> nat;\n/// Updated doc\nspec fn next(x: int) -> bool;";
+        //  `//  ...` between methods should skip doc comments
+        let source = "    spec fn degree() -> nat;\n\n    ///  Doc for next\n    spec fn next() -> bool;\n";
+        let old = "spec fn degree() -> nat;\n//  ...\nspec fn next() -> bool;";
+        let new = "spec fn degree() -> nat;\n///  Updated doc\nspec fn next(x: int) -> bool;";
         let result = edit_file(source, old, new).unwrap();
         assert!(result.contains("spec fn next(x: int) -> bool;"), "method should be updated");
     }
 
     #[test]
     fn test_list_items_shows_doc_comment_placeholder() {
-        let source = "/// This is documented\nfn foo() {\n    body();\n}\n\nfn bar() {}\n";
+        let source = "///  This is documented\nfn foo() {\n    body();\n}\n\nfn bar() {}\n";
         let result = list_items(source, None).unwrap();
-        assert!(result.contains("// ..."), "should show doc comment placeholder for foo");
-        // bar has no doc comment, should not have // ...
+        assert!(result.contains("//  ..."), "should show doc comment placeholder for foo");
+        //  bar has no doc comment, should not have //  ...
         let bar_line = result.lines().find(|l| l.contains("fn bar")).unwrap();
         let bar_idx = result.find(bar_line).unwrap();
-        // Check the line before bar doesn't have // ...
+        //  Check the line before bar doesn't have //  ...
         let before_bar = &result[..bar_idx];
         let prev_line = before_bar.lines().last().unwrap_or("");
-        assert!(!prev_line.contains("// ..."), "bar should not have doc comment placeholder");
+        assert!(!prev_line.contains("//  ..."), "bar should not have doc comment placeholder");
     }
 }
 
@@ -2482,7 +2482,7 @@ pub fn create_triangle(a: u64, b: u64, c: u64) -> (t: Triangle)
     Triangle { vertices: [a, b, c] }
 }
 
-} // verus!
+} //  verus!
 "#;
         let result = list_items_tree(source).unwrap();
         println!("TREE OUTPUT:\n{}", result);

@@ -1,5 +1,5 @@
-// Standalone entry point — disables context management so all tools work
-// without calling context_activate first.
+//  Standalone entry point — disables context management so all tools work
+//  without calling context_activate first.
 
 mod editor;
 mod index;
@@ -15,17 +15,9 @@ use anyhow::Result;
 use rmcp::{ServiceExt, transport::stdio};
 use std::sync::{Arc, RwLock};
 use tokio::sync::watch;
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()),
-        )
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .init();
 
     let shared_index = Arc::new(RwLock::new(index::Index::empty()));
     let (ready_tx, ready_rx) = watch::channel(false);

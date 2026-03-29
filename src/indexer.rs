@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use walkdir::WalkDir;
 
-/// Per-file cache: maps absolute path → (mtime, parsed items).
+///  Per-file cache: maps absolute path → (mtime, parsed items).
 pub type FileCache = HashMap<PathBuf, (SystemTime, ParsedItems)>;
 
-/// Auto-discover verus-* crate roots under the workspace directory.
+///  Auto-discover verus-* crate roots under the workspace directory.
 fn discover_verus_roots(workspace: &Path) -> Vec<(String, PathBuf)> {
     let mut roots = Vec::new();
     let entries = match std::fs::read_dir(workspace) {
@@ -28,7 +28,7 @@ fn discover_verus_roots(workspace: &Path) -> Vec<(String, PathBuf)> {
     roots
 }
 
-/// Discover all .rs files under a directory.
+///  Discover all .rs files under a directory.
 fn collect_rs_files(dir: &Path) -> Vec<PathBuf> {
     WalkDir::new(dir)
         .into_iter()
@@ -41,7 +41,7 @@ fn collect_rs_files(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Derive module path from a file's relative path within its crate src dir.
+///  Derive module path from a file's relative path within its crate src dir.
 fn module_path_from_rel(rel_path: &str) -> String {
     rel_path
         .trim_end_matches(".rs")
@@ -51,8 +51,8 @@ fn module_path_from_rel(rel_path: &str) -> String {
         .replace("lib", "crate")
 }
 
-/// Parse crate roots from VERUS_MCP_ROOTS env var.
-/// Format: "crate_name=path,crate_name=path,..."
+///  Parse crate roots from VERUS_MCP_ROOTS env var.
+///  Format: "crate_name=path,crate_name=path,..."
 fn roots_from_env() -> Option<Vec<(String, PathBuf)>> {
     let val = std::env::var("VERUS_MCP_ROOTS").ok()?;
     let mut roots = Vec::new();
@@ -72,15 +72,15 @@ fn roots_from_env() -> Option<Vec<(String, PathBuf)>> {
     }
 }
 
-/// Resolve the base directory — walk up from cwd looking for a directory
-/// that contains the expected crate dirs.
+///  Resolve the base directory — walk up from cwd looking for a directory
+///  that contains the expected crate dirs.
 pub fn find_workspace_root() -> PathBuf {
     if let Ok(val) = std::env::var("VERUS_MCP_WORKSPACE") {
         return PathBuf::from(val);
     }
     let mut dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     loop {
-        // Check if this dir contains verus-algebra (a good marker)
+        //  Check if this dir contains verus-algebra (a good marker)
         if dir.join("verus-algebra").is_dir() {
             return dir;
         }
@@ -88,11 +88,11 @@ pub fn find_workspace_root() -> PathBuf {
             break;
         }
     }
-    // Fallback to cwd
+    //  Fallback to cwd
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Return the resolved source root directories for watching.
+///  Return the resolved source root directories for watching.
 pub fn resolve_roots() -> Vec<PathBuf> {
     let workspace = find_workspace_root();
     let roots: Vec<(String, PathBuf)> = roots_from_env()
@@ -100,12 +100,12 @@ pub fn resolve_roots() -> Vec<PathBuf> {
     roots.into_iter().map(|(_, p)| p).filter(|p| p.is_dir()).collect()
 }
 
-/// Build the full index from scratch (empty cache).
+///  Build the full index from scratch (empty cache).
 pub fn build_index() -> (Vec<FnEntry>, Vec<TypeEntry>, Vec<TraitEntry>, Vec<ImplEntry>, FileCache) {
     build_index_incremental(&FileCache::new())
 }
 
-/// Incrementally rebuild the index, reusing cached entries for unchanged files.
+///  Incrementally rebuild the index, reusing cached entries for unchanged files.
 pub fn build_index_incremental(old_cache: &FileCache) -> (Vec<FnEntry>, Vec<TypeEntry>, Vec<TraitEntry>, Vec<ImplEntry>, FileCache) {
     let workspace = find_workspace_root();
     let roots: Vec<(String, PathBuf)> = roots_from_env()
@@ -136,7 +136,7 @@ pub fn build_index_incremental(old_cache: &FileCache) -> (Vec<FnEntry>, Vec<Type
                 }
             };
 
-            // Check cache: reuse if mtime matches
+            //  Check cache: reuse if mtime matches
             if let Some((old_mtime, old_items)) = old_cache.get(&file_path) {
                 if *old_mtime == mtime {
                     all_fns.extend(old_items.functions.iter().cloned());
@@ -149,7 +149,7 @@ pub fn build_index_incremental(old_cache: &FileCache) -> (Vec<FnEntry>, Vec<Type
                 }
             }
 
-            // Cache miss — re-parse
+            //  Cache miss — re-parse
             let source = match std::fs::read_to_string(&file_path) {
                 Ok(s) => s,
                 Err(e) => {

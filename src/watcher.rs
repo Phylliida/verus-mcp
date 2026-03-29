@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 
-/// Watch source directories for `.rs` file changes and auto-reindex.
-/// Debounces rapid changes with a 500ms delay.
+///  Watch source directories for `.rs` file changes and auto-reindex.
+///  Debounces rapid changes with a 500ms delay.
 pub async fn watch_and_reindex(index: Arc<RwLock<Index>>, roots: Vec<PathBuf>) {
     let (tx, mut rx) = mpsc::channel::<()>(64);
 
@@ -42,15 +42,15 @@ pub async fn watch_and_reindex(index: Arc<RwLock<Index>>, roots: Vec<PathBuf>) {
     }
 
     loop {
-        // Wait for the first change event
+        //  Wait for the first change event
         if rx.recv().await.is_none() {
-            break; // channel closed
+            break; //  channel closed
         }
-        // Debounce: wait 500ms, drain any queued events
+        //  Debounce: wait 500ms, drain any queued events
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         while rx.try_recv().is_ok() {}
 
-        // Incremental reindex
+        //  Incremental reindex
         let old_cache = {
             let idx = match index.read() {
                 Ok(idx) => idx,
@@ -76,7 +76,7 @@ pub async fn watch_and_reindex(index: Arc<RwLock<Index>>, roots: Vec<PathBuf>) {
         }
     }
 
-    // Keep _watcher alive — dropping it stops watching.
-    // This line is unreachable but prevents the watcher from being optimized away.
+    //  Keep _watcher alive — dropping it stops watching.
+    //  This line is unreachable but prevents the watcher from being optimized away.
     drop(watcher);
 }
