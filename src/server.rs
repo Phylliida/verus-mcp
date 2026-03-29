@@ -348,8 +348,7 @@ struct ContextFile {
 }
 
 fn contexts_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(home)
+    crate::indexer::find_workspace_root()
         .join(".verus-mcp")
         .join("contexts")
 }
@@ -819,9 +818,9 @@ fn build_check_script(
 VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
 VERUS_SOURCE="$VERUS_ROOT/source"
 case "$(uname -s)-$(uname -m)" in
-  Darwin-arm64)  TOOLCHAIN="1.93.0-aarch64-apple-darwin" ;;
-  Darwin-x86_64) TOOLCHAIN="1.93.0-x86_64-apple-darwin" ;;
-  *)             TOOLCHAIN="1.93.0-x86_64-unknown-linux-gnu" ;;
+  Darwin-arm64)  TOOLCHAIN="1.94.0-aarch64-apple-darwin" ;;
+  Darwin-x86_64) TOOLCHAIN="1.94.0-x86_64-apple-darwin" ;;
+  *)             TOOLCHAIN="1.94.0-x86_64-unknown-linux-gnu" ;;
 esac
 export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
 export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
@@ -869,9 +868,9 @@ VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
 VERUS_SOURCE="$VERUS_ROOT/source"
 CARGO_VERUS="$VERUS_SOURCE/target-verus/release/cargo-verus"
 case "$(uname -s)-$(uname -m)" in
-  Darwin-arm64)  TOOLCHAIN="1.93.0-aarch64-apple-darwin" ;;
-  Darwin-x86_64) TOOLCHAIN="1.93.0-x86_64-apple-darwin" ;;
-  *)             TOOLCHAIN="1.93.0-x86_64-unknown-linux-gnu" ;;
+  Darwin-arm64)  TOOLCHAIN="1.94.0-aarch64-apple-darwin" ;;
+  Darwin-x86_64) TOOLCHAIN="1.94.0-x86_64-apple-darwin" ;;
+  *)             TOOLCHAIN="1.94.0-x86_64-unknown-linux-gnu" ;;
 esac
 export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
 export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
@@ -909,9 +908,9 @@ VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
 VERUS_SOURCE="$VERUS_ROOT/source"
 CARGO_VERUS="$VERUS_SOURCE/target-verus/release/cargo-verus"
 case "$(uname -s)-$(uname -m)" in
-  Darwin-arm64)  TOOLCHAIN="1.93.0-aarch64-apple-darwin" ;;
-  Darwin-x86_64) TOOLCHAIN="1.93.0-x86_64-apple-darwin" ;;
-  *)             TOOLCHAIN="1.93.0-x86_64-unknown-linux-gnu" ;;
+  Darwin-arm64)  TOOLCHAIN="1.94.0-aarch64-apple-darwin" ;;
+  Darwin-x86_64) TOOLCHAIN="1.94.0-x86_64-apple-darwin" ;;
+  *)             TOOLCHAIN="1.94.0-x86_64-unknown-linux-gnu" ;;
 esac
 export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
 export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
@@ -992,9 +991,9 @@ unset CARGO_ENCODED_RUSTFLAGS
 VERUS_ROOT="${{VERUS_ROOT:-{default_verus_root}}}"
 VERUS_SOURCE="$VERUS_ROOT/source"
 case "$(uname -s)-$(uname -m)" in
-  Darwin-arm64)  TOOLCHAIN="1.93.0-aarch64-apple-darwin" ;;
-  Darwin-x86_64) TOOLCHAIN="1.93.0-x86_64-apple-darwin" ;;
-  *)             TOOLCHAIN="1.93.0-x86_64-unknown-linux-gnu" ;;
+  Darwin-arm64)  TOOLCHAIN="1.94.0-aarch64-apple-darwin" ;;
+  Darwin-x86_64) TOOLCHAIN="1.94.0-x86_64-apple-darwin" ;;
+  *)             TOOLCHAIN="1.94.0-x86_64-unknown-linux-gnu" ;;
 esac
 export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
 export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
