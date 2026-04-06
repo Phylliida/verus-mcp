@@ -851,6 +851,47 @@ fn has_dependency_compilation(stderr: &str, target_crate: &str) -> bool {
     false
 }
 
+///  Format a resolved one-liner showing the effective command with env vars.
+fn format_resolved_build_command(
+    default_verus_root: &std::path::Path,
+    pkg: &str,
+    features: Option<&str>,
+    release: bool,
+    extra_args: Option<&str>,
+) -> String {
+    let verus_root = std::env::var("VERUS_ROOT")
+        .unwrap_or_else(|_| default_verus_root.display().to_string());
+    let source = format!("{}/source", verus_root);
+    let cargo_verus = format!("{}/target-verus/release/cargo-verus", source);
+    let z3_path = format!("{}/z3", source);
+    let toolchain = if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") {
+            "1.94.0-aarch64-apple-darwin"
+        } else {
+            "1.94.0-x86_64-apple-darwin"
+        }
+    } else {
+        "1.94.0-x86_64-unknown-linux-gnu"
+    };
+
+    let mut cmd = format!(
+        "VERUS_Z3_PATH={} RUSTUP_TOOLCHAIN={} {} build --manifest-path Cargo.toml -p {}",
+        z3_path, toolchain, cargo_verus, pkg,
+    );
+    if let Some(f) = features {
+        cmd.push_str(&format!(" --features {}", f));
+    }
+    if release {
+        cmd.push_str(" --release");
+    }
+    if let Some(extra) = extra_args {
+        if !extra.is_empty() {
+            cmd.push_str(&format!(" {}", extra));
+        }
+    }
+    cmd
+}
+
 ///  Build the bash script for `cargo-verus build`.
 fn build_build_script(
     default_verus_root: &std::path::Path,
@@ -2735,16 +2776,26 @@ PYEOF
         }
 
         let default_verus_root = workspace.join("verus");
+        let release = params.release.unwrap_or(false);
+        let cmd_display = format_resolved_build_command(
+            &default_verus_root,
+            &params.crate_name,
+            params.features.as_deref(),
+            release,
+            params.extra_args.as_deref(),
+        );
         let script = build_build_script(
             &default_verus_root,
             &params.crate_name,
             params.features.as_deref(),
-            params.release.unwrap_or(false),
+            release,
             params.extra_args.as_deref(),
         );
         let output = match run_bash_script(&script, &crate_dir).await {
             Ok(output) => output,
-            Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
+            Err(msg) => return Ok(CallToolResult::success(vec![Content::text(
+                format!("$ {}\n\n{}", cmd_display, msg)
+            )])),
         };
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2754,7 +2805,8 @@ PYEOF
         if !diagnostics.is_empty() {
             let annotated = self.annotate_diagnostics(&diagnostics, &params.crate_name);
             return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Build failed\n\n{}",
+                "$ {}\n\nBuild failed\n\n{}",
+                cmd_display,
                 annotated.join("\n\n")
             ))]));
         }
@@ -2766,13 +2818,13 @@ PYEOF
             let start = lines.len().saturating_sub(50);
             let tail = lines[start..].join("\n");
             return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Build failed\n\n{}", tail
+                "$ {}\n\nBuild failed\n\n{}", cmd_display, tail
             ))]));
         }
 
-        let mode = if params.release.unwrap_or(false) { " (release)" } else { "" };
+        let mode = if release { " (release)" } else { "" };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "{}: built successfully{}", params.crate_name, mode
+            "$ {}\n\n{}: built successfully{}", cmd_display, params.crate_name, mode
         ))]))
     }
 
