@@ -825,7 +825,7 @@ esac
 export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
 export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
 export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
-{prebuild}cargo verus verify --manifest-path Cargo.toml -p {pkg} {json_flag}-- {module_flag}--triggers-mode silent || true
+{prebuild}cargo verus verify --manifest-path Cargo.toml -p {pkg} {json_flag}-- {module_flag}-V cache --triggers-mode silent || true
 "#,
         default_verus_root = default_verus_root.display(),
         pkg = pkg,
@@ -1044,7 +1044,7 @@ JSON_FILE="$(mktemp)"
 trap 'rm -f "$JSON_FILE"' EXIT
 
 {prebuild}cargo verus verify --manifest-path Cargo.toml -p {pkg} \
-  -- {module_flag}--output-json --time-expanded --triggers-mode silent > "$JSON_FILE" || true
+  -- {module_flag}-V cache --output-json --time-expanded --triggers-mode silent > "$JSON_FILE" || true
 
 python3 - "$JSON_FILE" "{top_n}" <<'PYEOF'
 "#,
@@ -2131,7 +2131,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
             ))]));
         }
 
-        let default_verus_root = workspace.join("verus");
+        let default_verus_root = workspace.join("verus-dev");
         let module_flag = match params.module {
             Some(ref m) => match validate_module(&params.crate_name, m, &crate_dir) {
                 Ok(flag) => flag,
@@ -2209,7 +2209,7 @@ On success: clean summary. On failure: extracted error diagnostics with function
     ) -> Result<CallToolResult, McpError> {
         let note_prefix = note.map(|n| format!("{}\n\n", n)).unwrap_or_default();
         let summary_re =
-            regex::Regex::new(r"verification results::\s*(\d+) verified,\s*(\d+) errors")
+            regex::Regex::new(r"verification results::\s*(\d+) verified,\s*(\d+) errors(?:,\s*(\d+) cached)?")
                 .unwrap();
 
         //  Search both stdout and stderr for the verification summary.
@@ -2230,11 +2230,13 @@ On success: clean summary. On failure: extracted error diagnostics with function
         if let Some(caps) = &summary_caps {
             let verified: usize = caps[1].parse().unwrap_or(0);
             let errors: usize = caps[2].parse().unwrap_or(0);
+            let cached: usize = caps.get(3).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            let cached_msg = if cached > 0 { format!(", {} cached", cached) } else { String::new() };
 
             if errors == 0 {
                 return Ok(CallToolResult::success(vec![Content::text(format!(
-                    "{}{}: {} verified, 0 errors",
-                    note_prefix, crate_name, verified
+                    "{}{}: {} verified, 0 errors{}",
+                    note_prefix, crate_name, verified, cached_msg
                 ))]));
             }
 
@@ -2243,8 +2245,8 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 let annotated = self.annotate_diagnostics(&diagnostics, crate_name);
                 let mut text = format!("{}{}", note_prefix, annotated.join("\n\n"));
                 text.push_str(&format!(
-                    "\n\n{}: {} verified, {} errors",
-                    crate_name, verified, errors
+                    "\n\n{}: {} verified, {} errors{}",
+                    crate_name, verified, errors, cached_msg
                 ));
                 return Ok(CallToolResult::success(vec![Content::text(text)]));
             }
@@ -2254,8 +2256,8 @@ On success: clean summary. On failure: extracted error diagnostics with function
             let fallback = if !rendered.is_empty() { rendered } else { stderr.to_string() };
             let mut text = format!("{}{}", note_prefix, fallback);
             text.push_str(&format!(
-                "\n\n{}: {} verified, {} errors",
-                crate_name, verified, errors
+                "\n\n{}: {} verified, {} errors{}",
+                crate_name, verified, errors, cached_msg
             ));
             return Ok(CallToolResult::success(vec![Content::text(text)]));
         }
@@ -2601,7 +2603,7 @@ Timeout: 10 minutes.")]
             ))]));
         }
 
-        let default_verus_root = workspace.join("verus");
+        let default_verus_root = workspace.join("verus-dev");
         let module_flag = match params.module {
             Some(ref m) => match validate_module(&params.crate_name, m, &crate_dir) {
                 Ok(flag) => flag,
@@ -2775,7 +2777,7 @@ PYEOF
             ))]));
         }
 
-        let default_verus_root = workspace.join("verus");
+        let default_verus_root = workspace.join("verus-dev");
         let release = params.release.unwrap_or(false);
         let cmd_display = format_resolved_build_command(
             &default_verus_root,
@@ -2857,7 +2859,7 @@ PYEOF
             ))]));
         }
 
-        let default_verus_root = workspace.join("verus");
+        let default_verus_root = workspace.join("verus-dev");
         let script = build_run_script(
             &default_verus_root,
             &params.crate_name,
