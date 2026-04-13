@@ -1,6 +1,7 @@
 mod editor;
 mod index;
 mod indexer;
+mod params_de;
 mod parser;
 mod server;
 mod types;

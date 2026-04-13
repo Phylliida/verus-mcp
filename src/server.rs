@@ -1,6 +1,7 @@
 use crate::editor;
 use crate::index::{Index, Matcher, DEFAULT_RESULTS, MAX_RESULTS};
 use crate::indexer;
+use crate::params_de;
 use crate::types::FnKind;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::ToolCallContext, wrapper::Parameters},
@@ -66,14 +67,16 @@ pub struct SearchParams {
     ///  Filter by module path substring
     pub module: Option<String>,
     ///  Only show trait axioms/methods
-    #[serde(default)]
+    #[serde(default, deserialize_with = "params_de::bool_default")]
     pub trait_only: bool,
     ///  When true, return full signatures with requires/ensures (default limit drops to 10)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "params_de::bool_default")]
     pub details: bool,
     ///  Max results to return (default 50, or 10 when details=true)
+    #[serde(default, deserialize_with = "params_de::opt_usize")]
     pub limit: Option<usize>,
     ///  Skip first N results for pagination (default 0)
+    #[serde(default, deserialize_with = "params_de::opt_usize")]
     pub offset: Option<usize>,
 }
 
@@ -86,6 +89,7 @@ pub struct LookupParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BatchLookupParams {
     ///  List of function/type names to look up (max 10)
+    #[serde(deserialize_with = "params_de::vec_string")]
     pub names: Vec<String>,
 }
 
@@ -102,8 +106,10 @@ pub struct ClauseSearchParams {
     ///  Filter by function kind: "spec", "proof", or "exec"
     pub kind: Option<String>,
     ///  Max results to return (default 50)
+    #[serde(default, deserialize_with = "params_de::opt_usize")]
     pub limit: Option<usize>,
     ///  Skip first N results for pagination (default 0)
+    #[serde(default, deserialize_with = "params_de::opt_usize")]
     pub offset: Option<usize>,
 }
 
@@ -124,8 +130,10 @@ pub struct SignatureSearchParams {
     ///  Filter by module path substring
     pub module: Option<String>,
     ///  Max results to return (default 50)
+    #[serde(default, deserialize_with = "params_de::opt_usize")]
     pub limit: Option<usize>,
     ///  Skip first N results for pagination (default 0)
+    #[serde(default, deserialize_with = "params_de::opt_usize")]
     pub offset: Option<usize>,
 }
 
@@ -137,6 +145,7 @@ pub struct CheckParams {
     ///  or module path (e.g., "runtime::polygon"). Bypasses check.sh and runs cargo verus directly.
     pub module: Option<String>,
     ///  When true, return raw compiler output instead of parsed diagnostics. Useful when error parsing misses something.
+    #[serde(default, deserialize_with = "params_de::opt_bool")]
     pub raw: Option<bool>,
 }
 
@@ -147,6 +156,7 @@ pub struct BuildParams {
     ///  Cargo features to enable (e.g., "feat1,feat2")
     pub features: Option<String>,
     ///  Build in release mode
+    #[serde(default, deserialize_with = "params_de::opt_bool")]
     pub release: Option<bool>,
     ///  Extra flags passed to cargo build (e.g., "--target x86_64-unknown-linux-gnu")
     pub extra_args: Option<String>,
@@ -159,6 +169,7 @@ pub struct RunParams {
     ///  Cargo features to enable (e.g., "feat1,feat2")
     pub features: Option<String>,
     ///  Run in release mode
+    #[serde(default, deserialize_with = "params_de::opt_bool")]
     pub release: Option<bool>,
     ///  Extra flags passed to cargo run (before --)
     pub extra_args: Option<String>,
@@ -173,6 +184,7 @@ pub struct ProfileParams {
     ///  Optional: profile only this module. Accepts a file path or module path.
     pub module: Option<String>,
     ///  Number of top functions to show (default: 25)
+    #[serde(default, deserialize_with = "params_de::opt_usize")]
     pub top_n: Option<usize>,
 }
 
@@ -199,6 +211,7 @@ pub struct FindParams {
     ///  Exact name for lookup, source view, trait search, module browsing, or dependencies
     pub name: Option<String>,
     ///  Multiple names for batch lookup (max 10)
+    #[serde(default, deserialize_with = "params_de::opt_vec_string")]
     pub names: Option<Vec<String>>,
     ///  Search scope (omit for name search/lookup):
     ///  "ensures", "requires", "body", "doc" — search clause/body/doc content
@@ -226,14 +239,16 @@ pub struct FindParams {
     ///  For dependencies: "callers" (default) or "callees"
     pub direction: Option<String>,
     ///  Return full signatures with requires/ensures
-    #[serde(default)]
+    #[serde(default, deserialize_with = "params_de::bool_default")]
     pub details: bool,
     ///  Only show trait axioms/methods
-    #[serde(default)]
+    #[serde(default, deserialize_with = "params_de::bool_default")]
     pub trait_only: bool,
     ///  Max results (default 50, or 10 when details=true)
+    #[serde(default, deserialize_with = "params_de::opt_usize")]
     pub limit: Option<usize>,
     ///  Skip first N results for pagination
+    #[serde(default, deserialize_with = "params_de::opt_usize")]
     pub offset: Option<usize>,
 }
 
@@ -252,7 +267,7 @@ pub struct FnSpec {
     ///  Visibility: "pub", "pub(crate)", or omit for private
     pub visibility: Option<String>,
     ///  Whether this is an `open` spec fn
-    #[serde(default)]
+    #[serde(default, deserialize_with = "params_de::bool_default")]
     pub open: bool,
     ///  Generic type parameters, e.g. "<T: Ring>"
     pub type_params: Option<String>,
@@ -261,8 +276,10 @@ pub struct FnSpec {
     ///  Return type, e.g. "bool" or "(nat, nat)"
     pub return_type: Option<String>,
     ///  Requires clauses (each is one predicate)
+    #[serde(default, deserialize_with = "params_de::opt_vec_string")]
     pub requires: Option<Vec<String>>,
     ///  Ensures clauses (each is one predicate)
+    #[serde(default, deserialize_with = "params_de::opt_vec_string")]
     pub ensures: Option<Vec<String>>,
     ///  Decreases clause, e.g. "n"
     pub decreases: Option<String>,
@@ -271,6 +288,7 @@ pub struct FnSpec {
     ///  Doc comment text (will be prefixed with `///` per line)
     pub doc: Option<String>,
     ///  Attributes, e.g. ["#[verifier::external_body]"]
+    #[serde(default, deserialize_with = "params_de::opt_vec_string")]
     pub annotations: Option<Vec<String>>,
 }
 
@@ -849,6 +867,36 @@ fn has_dependency_compilation(stderr: &str, target_crate: &str) -> bool {
         }
     }
     false
+}
+
+///  Pick the verus verification summary from combined stdout+stderr output.
+///
+///  Returns `(verified, errors, cached)` for the most informative summary line,
+///  or `None` if no summary line is present.
+///
+///  Full-crate `cargo verus verify` can emit TWO summary lines for the target:
+///  one from the verify pass with real counts (including `cached`), and a
+///  trailing one from a follow-up build pass that prints `0 verified, 0 errors`.
+///  We pick the summary with the largest total work (verified + errors + cached)
+///  so the empty trailing summary never wins.
+///
+///  Dependency summaries from a previous run are filtered upstream by
+///  `has_dependency_compilation` triggering a rerun, so by the time this is
+///  called only target-crate summaries should remain.
+fn pick_verus_summary(combined: &str) -> Option<(usize, usize, usize)> {
+    let re = regex::Regex::new(
+        r"verification results::\s*(\d+) verified,\s*(\d+) errors(?:,\s*(\d+) cached)?",
+    )
+    .unwrap();
+    re.captures_iter(combined)
+        .map(|c| {
+            let v: usize = c[1].parse().unwrap_or(0);
+            let e: usize = c[2].parse().unwrap_or(0);
+            let cached: usize =
+                c.get(3).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            (v, e, cached)
+        })
+        .max_by_key(|(v, e, c)| v + e + c)
 }
 
 ///  Format a resolved one-liner showing the effective command with env vars.
@@ -2208,29 +2256,18 @@ On success: clean summary. On failure: extracted error diagnostics with function
         note: Option<&str>,
     ) -> Result<CallToolResult, McpError> {
         let note_prefix = note.map(|n| format!("{}\n\n", n)).unwrap_or_default();
-        let summary_re =
-            regex::Regex::new(r"verification results::\s*(\d+) verified,\s*(\d+) errors(?:,\s*(\d+) cached)?")
-                .unwrap();
 
-        //  Search both stdout and stderr for the verification summary.
-        //  The verus compiler prints it via println! (stdout), but cargo may
-        //  route it to either stream depending on message format settings.
-        //  Use .last() to get the final (most relevant) match.
+        //  See `pick_verus_summary` for the rationale on multi-summary handling.
         let combined = format!("{}\n{}", stdout, stderr);
-        let summary_caps = summary_re.captures_iter(&combined).last();
+        let summary = pick_verus_summary(&combined);
 
         //  Determine if there are errors to filter warnings
-        let has_errors = summary_caps.as_ref()
-            .map(|c| c[2].parse::<usize>().unwrap_or(0) > 0)
-            .unwrap_or(false);
+        let has_errors = summary.map(|(_, e, _)| e > 0).unwrap_or(false);
 
         //  Parse JSON diagnostics from stdout (suppress warnings when errors exist)
         let diagnostics = Self::parse_json_diagnostics(stdout, has_errors);
 
-        if let Some(caps) = &summary_caps {
-            let verified: usize = caps[1].parse().unwrap_or(0);
-            let errors: usize = caps[2].parse().unwrap_or(0);
-            let cached: usize = caps.get(3).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+        if let Some((verified, errors, cached)) = summary {
             let cached_msg = if cached > 0 { format!(", {} cached", cached) } else { String::new() };
 
             if errors == 0 {
@@ -2402,7 +2439,34 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 continue;
             };
 
-            let err_msg = format!("{}: {}", diag.level, diag.message);
+            //  Collect secondary span context: same-function spans get inlined,
+            //  cross-file spans get appended to the error message.
+            let mut cross_file_context: Vec<String> = Vec::new();
+            let mut same_fn_spans: Vec<(usize, String)> = Vec::new();
+
+            for sec_span in diag.spans.iter().filter(|s| !s.is_primary) {
+                if let Some(ref label) = sec_span.label {
+                    let sec_file = format!("{}/{}", crate_name, sec_span.file_name);
+                    if sec_file == qualified_file
+                        && sec_span.line_start >= entry.line
+                        && sec_span.line_start <= entry.end_line
+                    {
+                        same_fn_spans.push((sec_span.line_start.saturating_sub(1), format!("  → {}", label)));
+                    } else {
+                        //  Cross-file secondary span — include as context in the error message
+                        cross_file_context.push(format!(
+                            "{}:{}: {}",
+                            sec_span.file_name, sec_span.line_start, label
+                        ));
+                    }
+                }
+            }
+
+            let err_msg = if cross_file_context.is_empty() {
+                format!("{}: {}", diag.level, diag.message)
+            } else {
+                format!("{}: {} ({})", diag.level, diag.message, cross_file_context.join("; "))
+            };
             let err_line_0idx = primary_line.saturating_sub(1); //  0-indexed
             let key = (entry.file_path.clone(), entry.line, entry.end_line);
             if !fn_errors.contains_key(&key) {
@@ -2413,21 +2477,9 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 .or_default()
                 .push((err_line_0idx, err_msg));
 
-            //  Also include secondary spans as additional context
-            for sec_span in diag.spans.iter().filter(|s| !s.is_primary) {
-                if let Some(ref label) = sec_span.label {
-                    let sec_file = format!("{}/{}", crate_name, sec_span.file_name);
-                    //  Only include if it's in the same function
-                    if sec_file == qualified_file
-                        && sec_span.line_start >= entry.line
-                        && sec_span.line_start <= entry.end_line
-                    {
-                        fn_errors
-                            .entry(key.clone())
-                            .or_default()
-                            .push((sec_span.line_start.saturating_sub(1), format!("  → {}", label)));
-                    }
-                }
+            //  Inline same-function secondary spans
+            for span_entry in same_fn_spans {
+                fn_errors.entry(key.clone()).or_default().push(span_entry);
             }
         }
 
@@ -3828,5 +3880,147 @@ impl ServerHandler for VerusMcpServer {
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
         self.tool_router.get(name).cloned()
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    //  ─── pick_verus_summary ─────────────────────────────────────────────────
+
+    #[test]
+    fn single_summary_module_level() {
+        //  --verify-module emits exactly one summary line.
+        let combined = "verification results:: 0 verified, 0 errors, 96 cached \
+                        (partial verification with `--verify-*`)\n\
+                        Compiling verus-rational v0.1.0\n\
+                        Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.20s\n";
+        assert_eq!(pick_verus_summary(combined), Some((0, 0, 96)));
+    }
+
+    #[test]
+    fn dual_summary_full_crate_picks_real_one() {
+        //  Full-crate `cargo verus verify` emits a verify pass summary AND
+        //  a trailing build pass summary that's always "0 verified, 0 errors".
+        //  We must pick the verify pass (the one with `cached`), not the
+        //  trailing empty summary. This was the original bug.
+        let combined = "verification results:: 0 verified, 0 errors, 278 cached\n\
+                        verification results:: 0 verified, 0 errors\n\
+                        Compiling verus-mandelbrot v0.1.0\n\
+                        Finished `dev` profile in 6.12s\n";
+        assert_eq!(pick_verus_summary(combined), Some((0, 0, 278)));
+    }
+
+    #[test]
+    fn dual_summary_with_real_verification_work() {
+        //  Some functions need re-verification (not all cached). The non-empty
+        //  summary still wins.
+        let combined = "verification results:: 12 verified, 0 errors, 266 cached\n\
+                        verification results:: 0 verified, 0 errors\n";
+        assert_eq!(pick_verus_summary(combined), Some((12, 0, 266)));
+    }
+
+    #[test]
+    fn dependency_modified_then_rerun_output() {
+        //  When a dependency is modified, `has_dependency_compilation`
+        //  triggers a rerun. The rerun output (which `parse_verus_output`
+        //  ultimately sees) contains only the target's summary because deps
+        //  are now cached and not re-invoked. Stats must come through
+        //  unchanged after the rerun.
+        let stdout = "verification results:: 4 verified, 0 errors, 270 cached\n\
+                      verification results:: 0 verified, 0 errors\n";
+        let stderr = "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.45s\n";
+        let combined = format!("{}\n{}", stdout, stderr);
+        assert_eq!(pick_verus_summary(&combined), Some((4, 0, 270)));
+    }
+
+    #[test]
+    fn dependency_summary_present_does_not_swallow_target() {
+        //  Defensive: if a dep summary somehow leaked through (e.g., the rerun
+        //  guard failed for some reason), max_by_key would prefer whichever
+        //  has more total work. We document this behavior so a future change
+        //  to the rerun guard doesn't silently regress: when both are present,
+        //  the *larger* summary wins. In practice the rerun guard prevents
+        //  this case, but the test pins the behavior so we know it's defined.
+        //
+        //  Here the target has more work than the dep:
+        let combined = "verification results:: 5 verified, 0 errors, 95 cached\n\
+                        verification results:: 50 verified, 0 errors, 600 cached\n\
+                        verification results:: 0 verified, 0 errors\n";
+        assert_eq!(pick_verus_summary(combined), Some((50, 0, 600)));
+    }
+
+    #[test]
+    fn errors_present_picks_the_error_summary() {
+        //  When verification fails, the summary has errors > 0. The empty
+        //  trailing summary may or may not be present; either way the
+        //  errored summary should win since it has more total work.
+        let combined = "verification results:: 18 verified, 3 errors, 250 cached\n\
+                        verification results:: 0 verified, 0 errors\n";
+        assert_eq!(pick_verus_summary(combined), Some((18, 3, 250)));
+    }
+
+    #[test]
+    fn no_summary_returns_none() {
+        let combined = "Compiling verus-rational v0.1.0\n\
+                        error[E0308]: mismatched types\n\
+                        Finished with errors\n";
+        assert_eq!(pick_verus_summary(combined), None);
+    }
+
+    #[test]
+    fn summary_without_cached_field() {
+        //  Old verus versions or `--verify-*` outputs may omit the cached
+        //  count entirely. Should still parse with cached=0.
+        let combined = "verification results:: 42 verified, 0 errors\n";
+        assert_eq!(pick_verus_summary(combined), Some((42, 0, 0)));
+    }
+
+    //  ─── has_dependency_compilation ─────────────────────────────────────────
+
+    #[test]
+    fn dep_compilation_detected_when_other_crate_compiles() {
+        let stderr = "   Compiling verus-bigint v0.1.0\n\
+                      Compiling verus-rational v0.1.0\n\
+                      Finished\n";
+        assert!(has_dependency_compilation(stderr, "verus-rational"));
+    }
+
+    #[test]
+    fn dep_compilation_not_detected_when_only_target_compiles() {
+        let stderr = "   Compiling verus-rational v0.1.0\n\
+                      Finished\n";
+        assert!(!has_dependency_compilation(stderr, "verus-rational"));
+    }
+
+    #[test]
+    fn dep_compilation_underscore_target_name() {
+        //  cargo prints the underscore form for some crates; the check should
+        //  recognize both forms as the target.
+        let stderr = "   Compiling verus_rational v0.1.0\n\
+                      Finished\n";
+        assert!(!has_dependency_compilation(stderr, "verus-rational"));
+    }
+
+    #[test]
+    fn dep_compilation_detected_when_target_also_compiles() {
+        //  This is the realistic "dep modified" case: a dep was changed, so
+        //  cargo recompiles BOTH the dep and the target. The function should
+        //  return true so the caller reruns to get clean per-target output.
+        let stderr = "   Compiling verus-bigint v0.1.0\n\
+                      Compiling verus-rational v0.1.0\n\
+                      Finished\n";
+        assert!(has_dependency_compilation(stderr, "verus-rational"));
+    }
+
+    #[test]
+    fn dep_compilation_empty_stderr() {
+        //  Fully cached run — no Compiling lines at all.
+        assert!(!has_dependency_compilation("", "verus-rational"));
+        assert!(!has_dependency_compilation(
+            "    Finished `dev` profile in 0.12s\n",
+            "verus-rational",
+        ));
     }
 }
