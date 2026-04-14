@@ -964,7 +964,7 @@ esac
 export PATH="$VERUS_SOURCE/target-verus/release:$PATH"
 export VERUS_Z3_PATH="$VERUS_SOURCE/z3"
 export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
-"$CARGO_VERUS" build --manifest-path Cargo.toml -p {pkg} {features_flag}{release_flag}{extra}--message-format=json 2>&1 || true
+"$CARGO_VERUS" build --manifest-path Cargo.toml -p {pkg} {features_flag}{release_flag}{extra}--message-format=json -- -V cache --triggers-mode silent 2>&1 || true
 "#,
         default_verus_root = default_verus_root.display(),
         pkg = pkg,
@@ -1022,7 +1022,7 @@ fi
 if [ -z "$BIN_NAME" ]; then
   BIN_NAME="{pkg}"
 fi
-"$CARGO_VERUS" build --manifest-path Cargo.toml -p {pkg} {features_flag}{release_flag}$BIN_FLAG {extra}2>&1
+"$CARGO_VERUS" build --manifest-path Cargo.toml -p {pkg} {features_flag}{release_flag}$BIN_FLAG {extra}-- -V cache --triggers-mode silent 2>&1
 BIN_NAME_US=$(echo "$BIN_NAME" | tr '-' '_')
 BIN_PATH="target/{profile_dir}/$BIN_NAME_US"
 if [ ! -f "$BIN_PATH" ]; then
@@ -2439,33 +2439,25 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 continue;
             };
 
-            //  Collect secondary span context: same-function spans get inlined,
-            //  cross-file spans get appended to the error message.
-            let mut cross_file_context: Vec<String> = Vec::new();
-            let mut same_fn_spans: Vec<(usize, String)> = Vec::new();
-
+            //  Collect cross-file secondary spans (e.g. trait postcondition errors
+            //  where the primary span is the trait definition but each impl is in
+            //  a different file). Include them in the error message so the errors
+            //  are distinguishable.
+            let mut cross_file_labels: Vec<String> = Vec::new();
             for sec_span in diag.spans.iter().filter(|s| !s.is_primary) {
-                if let Some(ref label) = sec_span.label {
-                    let sec_file = format!("{}/{}", crate_name, sec_span.file_name);
-                    if sec_file == qualified_file
-                        && sec_span.line_start >= entry.line
-                        && sec_span.line_start <= entry.end_line
-                    {
-                        same_fn_spans.push((sec_span.line_start.saturating_sub(1), format!("  → {}", label)));
-                    } else {
-                        //  Cross-file secondary span — include as context in the error message
-                        cross_file_context.push(format!(
-                            "{}:{}: {}",
-                            sec_span.file_name, sec_span.line_start, label
-                        ));
-                    }
+                let sec_file = format!("{}/{}", crate_name, sec_span.file_name);
+                if sec_file != qualified_file {
+                    cross_file_labels.push(format!(
+                        "{}:{}",
+                        sec_span.file_name, sec_span.line_start,
+                    ));
                 }
             }
 
-            let err_msg = if cross_file_context.is_empty() {
+            let err_msg = if cross_file_labels.is_empty() {
                 format!("{}: {}", diag.level, diag.message)
             } else {
-                format!("{}: {} ({})", diag.level, diag.message, cross_file_context.join("; "))
+                format!("{}: {} ({})", diag.level, diag.message, cross_file_labels.join("; "))
             };
             let err_line_0idx = primary_line.saturating_sub(1); //  0-indexed
             let key = (entry.file_path.clone(), entry.line, entry.end_line);
@@ -2477,9 +2469,21 @@ On success: clean summary. On failure: extracted error diagnostics with function
                 .or_default()
                 .push((err_line_0idx, err_msg));
 
-            //  Inline same-function secondary spans
-            for span_entry in same_fn_spans {
-                fn_errors.entry(key.clone()).or_default().push(span_entry);
+            //  Also include secondary spans as additional context
+            for sec_span in diag.spans.iter().filter(|s| !s.is_primary) {
+                if let Some(ref label) = sec_span.label {
+                    let sec_file = format!("{}/{}", crate_name, sec_span.file_name);
+                    //  Only include if it's in the same function
+                    if sec_file == qualified_file
+                        && sec_span.line_start >= entry.line
+                        && sec_span.line_start <= entry.end_line
+                    {
+                        fn_errors
+                            .entry(key.clone())
+                            .or_default()
+                            .push((sec_span.line_start.saturating_sub(1), format!("  → {}", label)));
+                    }
+                }
             }
         }
 
@@ -2912,17 +2916,30 @@ PYEOF
         }
 
         let default_verus_root = workspace.join("verus-dev");
+        let release = params.release.unwrap_or(false);
+        let mut cmd_display = format_resolved_build_command(
+            &default_verus_root,
+            &params.crate_name,
+            params.features.as_deref(),
+            release,
+            params.extra_args.as_deref(),
+        );
+        if let Some(ref args) = params.args {
+            cmd_display.push_str(&format!(" -- {}", args));
+        }
         let script = build_run_script(
             &default_verus_root,
             &params.crate_name,
             params.features.as_deref(),
-            params.release.unwrap_or(false),
+            release,
             params.extra_args.as_deref(),
             params.args.as_deref(),
         );
         let output = match run_bash_script(&script, &crate_dir).await {
             Ok(output) => output,
-            Err(msg) => return Ok(CallToolResult::success(vec![Content::text(msg)])),
+            Err(msg) => return Ok(CallToolResult::success(vec![Content::text(
+                format!("$ {}\n\n{}", cmd_display, msg)
+            )])),
         };
         let combined = String::from_utf8_lossy(&output.stdout);
 
@@ -2934,17 +2951,19 @@ PYEOF
             let start = lines.len().saturating_sub(80);
             let tail = lines[start..].join("\n");
             return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Build/run failed\n\n{}", tail
+                "$ {}\n\nBuild/run failed\n\n{}", cmd_display, tail
             ))]));
         }
 
         //  Return the program output
         if combined.trim().is_empty() {
             Ok(CallToolResult::success(vec![Content::text(format!(
-                "{}: ran successfully (no output)", params.crate_name
+                "$ {}\n\n{}: ran successfully (no output)", cmd_display, params.crate_name
             ))]))
         } else {
-            Ok(CallToolResult::success(vec![Content::text(combined.to_string())]))
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "$ {}\n\n{}", cmd_display, combined
+            ))]))
         }
     }
 
